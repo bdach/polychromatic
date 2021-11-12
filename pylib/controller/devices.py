@@ -157,7 +157,7 @@ class DevicesTab(shared.TabData):
 
         if type(device) in [None, str]:
             _ = self._
-            backend_name = middleman.BACKEND_ID_NAMES[backend]
+            backend_name = middleman.BACKEND_NAMES[backend]
 
             msg1 = _("An error occurred while reading this device. This could be a bug in either Polychromatic or [].").replace("[]", backend_name)
             msg2 = _("Try selecting this device again, or restart the backend and application. If this keeps happening, take note of the details below and report as a bug on the relevant project's issue tracker.")
@@ -415,7 +415,7 @@ class DevicesTab(shared.TabData):
         Prepares and returns a control that shows a message when clicking the button.
         """
         def _open_dialog():
-            dialog_title = middleman.BACKEND_ID_NAMES[device["backend"]]
+            dialog_title = middleman.BACKEND_NAMES[device["backend"]]
             self.widgets.open_dialog(self.widgets.dialog_generic, dialog_title, option["message"])
 
         button = QPushButton(option["button_text"])
@@ -590,7 +590,7 @@ class DevicesTab(shared.TabData):
         """
         dbg = self.dbg
         _ = self._
-        backend_name = middleman.BACKEND_ID_NAMES[self.current_backend]
+        backend_name = middleman.BACKEND_NAMES[self.current_backend]
 
         if response == True:
             dbg.stdout("Request successful", dbg.success, 1)
@@ -807,7 +807,7 @@ class DevicesTab(shared.TabData):
         _ = self._
 
         for backend_id in self.middleman.import_errors.keys():
-            backend_name = middleman.BACKEND_ID_NAMES[backend_id]
+            backend_name = middleman.BACKEND_NAMES[backend_id]
             exception = self.middleman.import_errors[backend_id].strip()
             dbg.stdout("\n{0}\n------------------------------\n{1}\n".format(backend_name, exception), dbg.error)
             self.widgets.open_dialog(self.widgets.dialog_generic,
@@ -823,7 +823,7 @@ class DevicesTab(shared.TabData):
         layout = self.Contents.layout()
         shared.clear_layout(layout)
 
-        backend_name = middleman.BACKEND_ID_NAMES[backend]
+        backend_name = middleman.BACKEND_NAMES[backend]
 
         def _restart_backend():
             backend_to_restart_fn = {
@@ -1028,7 +1028,7 @@ class DevicesTab(shared.TabData):
 
             hw = mkitem(_("Hardware"))
             hw.addChild(mkitem(_("Name"), device["name"]))
-            hw.addChild(mkitem(_("Backend"), middleman.BACKEND_ID_NAMES[device["backend"]], common.get_icon("logo", device["backend"])))
+            hw.addChild(mkitem(_("Backend"), middleman.BACKEND_NAMES[device["backend"]], common.get_icon("logo", device["backend"])))
             hw.addChild(mkitem(_("Internal Device ID"), str(device["uid"])))
             if device["vid"]:
                 hw.addChild(mkitem("VID:PID", "{0}:{1}".format(device["vid"], device["pid"])))

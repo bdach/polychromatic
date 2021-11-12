@@ -196,14 +196,14 @@ class PreferencesWindow(shared.TabData):
             return
 
         # See also: polychromatic_controller.Applicationdata.init_bg_thread.BackgroundThread()
-        openrazer_disabled = True if not "openrazer" in self.appdata.middleman.get_backends() else False
+        openrazer_disabled = self.appdata.middleman.is_backend_running("openrazer")
         self.dialog.findChild(QPushButton, "OpenRazerSettings").setDisabled(openrazer_disabled)
         self.dialog.findChild(QPushButton, "OpenRazerAbout").setDisabled(openrazer_disabled)
         self.dialog.findChild(QPushButton, "OpenRazerRestartDaemon").setDisabled(openrazer_disabled)
         self.dialog.findChild(QLabel, "OpenRazerLog").setDisabled(openrazer_disabled)
 
         # Backend Status
-        for backend in middleman.BACKEND_ID_NAMES.keys():
+        for backend in middleman.BACKEND_NAMES.keys():
             label = self._("Unknown")
             icon = "serious"
 

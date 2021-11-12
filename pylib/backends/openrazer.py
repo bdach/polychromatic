@@ -12,22 +12,26 @@ Project URL: https://github.com/openrazer/openrazer
 
 import glob
 import os
-
-# Imported on demand:
-# import requests       _get_device_image() for retrieving device image URLs
-
-from . import _backend
-from .. import fx
+import requests
 
 from openrazer import client as rclient
 
+from ._backend import Backend as Backend
+from .. import fx
+from .. import common
 
-class Backend(_backend.Backend):
+
+class OpenRazerBackend(Backend):
     """
-    Bindings for the OpenRazer 2.x Python library.
+    Integration with the OpenRazer 3.x Python library.
+
+    Thoughout the module:
+    - 'rdevice' refers to an openrazer.client.devices.RazerDevice object.
+    - 'rzone' refers to a openrazer.client.fx.RazerFX (main) or
+                          openrazer.client.fx.SingleLed object (e.g. logo)
     """
-    def __init__(self, dbg, common, _):
-        super().__init__(dbg, common, _)
+    def __init__(self, *args):
+        super().__init__(*args)
         self.backend_id = "openrazer"
         self.logo = "openrazer.svg"
         self.version = rclient.__version__
@@ -35,26 +39,46 @@ class Backend(_backend.Backend):
         self.bug_url = "https://github.com/openrazer/openrazer/issues"
         self.releases_url = "https://github.com/openrazer/openrazer/releases"
         self.license = "GPLv2"
-        self.config_store = self._get_config_store_path()
 
         # Variables for OpenRazer
         self.devman = None
-        self.devices = None
 
         # Client Settings
         self.allow_image_download = True
         self.ripple_refresh_rate = 0.05
-
         self.load_client_overrides()
+
+    def _reload_device_manager(self):
+        """
+        Returns a new instance of the OpenRazer Device Manager client. This
+        establishes a connection to the daemon via D-Bus. The devices list will
+        be up-to-date.
+
+        If the daemon "service" is not running, this will usually start it.
+        """
+        self.debug("Connecting to daemon...")
+        self.devman = rclient.DeviceManager()
+        self.devman.sync_effects = False
+
+    def init(self):
+        """
+        Summons the OpenRazer DeviceManager() daemon.
+        """
+        try:
+            self._reload_device_manager()
+            return True
+        except Exception as e:
+            self.debug("Failed: Got an exception initialising device manager!")
+            return self.get_exception_as_string(e)
 
     def load_client_overrides(self):
         """
         Load any user-defined client settings that Polychromatic should use
         interfacing with the daemon. These are stored as individual files inside
-        the ~/.config/polychromatic/backends/openrazer/ directory.
+        ~/.config/polychromatic/backends/openrazer/
         """
-        def _load_override(filename, data_type, default):
-            path = os.path.join(self.config_store, filename)
+        def _get_override(filename, data_type, default):
+            path = os.path.join(self.get_config_store_path(), filename)
             if not os.path.exists(path):
                 return default
 
@@ -68,1021 +92,345 @@ class Backend(_backend.Backend):
             except ValueError:
                 return default
 
-        self.allow_image_download = True if _load_override("allow_image_download", int, 1) == 1 else False
-        self.ripple_refresh_rate = _load_override("ripple_refresh_rate", float, 0.05)
-
-    def _reinit_device_manager(self, force_refresh=False):
-        """
-        OpenRazer uses a "Device Manager" containing devices connected. It only
-        needs to be refreshed when devices are connected/disconnected.
-
-        The device manager will be 'cached' for the duration of the session.
-        """
-        if not self.devman or force_refresh:
-            try:
-                self.debug("Initialising Device Manager...")
-                self.devman = rclient.DeviceManager()
-                self.devman.sync_effects = False
-                self.devices = self.devman.devices
-                return True
-            except Exception as e:
-                return self.common.get_exception_as_string(e)
-        return True
-
-    def get_device_list(self):
-        """
-        See _backend.get_device_list()
-        """
-        devices = []
-        uid = -1
-
-        if not self.devices:
-            success = self._reinit_device_manager(force_refresh=True)
-            if success != True:
-                return success
-
-        for rdevice in self.devices:
-            uid += 1
-
-            devices.append({
-                "backend": self.backend_id,
-                "uid": uid,
-                "name": rdevice.name,
-                "serial": str(rdevice.serial),
-                "form_factor": self._get_form_factor(rdevice),
-                "real_image": self._get_device_image(rdevice),
-                "zones": self._get_supported_zones(rdevice)
-            })
-
-        return devices
+        self.allow_image_download = True if _get_override("allow_image_download", int, 1) == 1 else False
+        self.ripple_refresh_rate = _get_override("ripple_refresh_rate", float, 0.05)
 
     def get_unsupported_devices(self):
         """
-        See _backend.get_unsupported_devices()
+        See Backend.get_unsupported_devices() and Backend.UnknownDeviceItem()
 
-        Connected Razer hardware not bound to the daemon likely means the driver/daemon
-        isn't set up correctly or the hardware isn't supported yet.
+        Returns a list of PIDs of Razer hardware that is physically plugged in,
+        but inaccessible by the daemon. Usually indicating the installation is
+        incomplete or the device is not supported by the driver.
         """
-        devices = []
-        unknown_list = self._get_unmanaged_razer_usb_pids()
-        form_factor = self.common.get_form_factor(self._, "unrecognised")
+        all_usb_pids = self.helpers.get_usb_pids_by_vid("1532")
+        reg_pids = []
+        unreg_pids = []
 
-        if not unknown_list:
-            return []
+        # Get VIDs and PIDs from daemon to exclude later.
+        for rdevice in self.devman.devices:
+            vidpid = self._get_device_vid_pid(rdevice)
+            reg_pids.append(vidpid.get("pid"))
 
-        for pid in unknown_list:
-            # Ignore Kitty headphones duplicate. 1532:0521 for headset, 1532:0F19 for Chroma (#328)
+        # Determine Razer PIDs that are not listed in the daemon
+        for pid in all_usb_pids:
+            if pid in reg_pids:
+                continue
+
+            # Ignore Kitty headphones duplicate: 1532:0521 [Headset], 1532:0F19 [Chroma] (#328)
             if pid == "0521":
                 continue
 
-            devices.append({
-                "backend": self.backend_id,
-                "name": "{0}:{1}".format("1532", pid),
-                "form_factor": form_factor,
-            })
+            device = Backend.UnknownDeviceItem()
+            device.name = "{0}:{1}".format("1532", pid)
+            unreg_pids.append(device)
 
+        return unreg_pids
+
+    def get_devices(self):
+        """
+        See Backend.get_devices() and Backend.DeviceItem()
+        """
+        devices = []
+        self._reload_device_manager()
+        for rdevice in self.devman.devices:
+            devices.append(self._get_device(rdevice))
         return devices
 
-    def get_device(self, uid):
+    def get_device_by_name(self, name):
         """
-        See _backend.get_device()
+        See Backend.get_device_by_name()
         """
         try:
-            success = self._reinit_device_manager()
-            if success != True:
-                return success
-            rdevice = self.devman.devices[uid]
-        except IndexError:
-            return None
+            for rdevice in self.devman.devices:
+                if rdevice.name == name:
+                    return self._get_device(rdevice)
         except Exception as e:
-            return self.common.get_exception_as_string(e)
-
-        form_factor = self._get_form_factor(rdevice)
-        real_image = self._get_device_image(rdevice)
-
-        _vid_pid = self._get_device_vid_pid(rdevice)
-        vid = _vid_pid.get("pid")
-        pid = _vid_pid.get("vid")
-
-        # Determine device variables
-        firmware_version = None
-        keyboard_layout = None
-        monochromatic = self._is_device_monochromatic(rdevice)
-        macros = False              # Supports key rebinding
-        game_mode = None            # Keyboards only
-        matrix = False              # Supports custom effects (per-key lighting)
-        battery_charging = False
-        battery_level = None
-        matrix_rows = None
-        matrix_cols = None
-        dpi_x = None
-        dpi_y = None
-        dpi_min = None
-        dpi_max = None
-        dpi_stages = []
-        poll_rate = None
-
-        # Retrieve device variables
-        if rdevice.has("name"):
-            name = rdevice.name
-        else:
-            self.debug("Device {0} doesn't have a name!".format(uid))
-            name = "Device " + str(uid)
-
-        if rdevice.has("serial"):
-            serial = str(rdevice.serial)
-            if not type(serial) == str or len(serial) <= 2:
-                self.debug("Got bad serial for {0}!".format(name))
-                serial = "0"
-        else:
-            self.debug("Device {0} doesn't have a valid serial!".format(uid))
-            name = "invalid_device_" + str(uid)
-
-        if rdevice.has("firmware_version"):
-            firmware_version = rdevice.firmware_version
-
-        if rdevice.has("keyboard_layout"):
-            keyboard_layout = rdevice.keyboard_layout
-
-        if rdevice.has("lighting_led_matrix"):
-            matrix = True
-            matrix_rows = rdevice.fx.advanced.rows
-            matrix_cols = rdevice.fx.advanced.cols
-
-            if rdevice.name == "Razer DeathStalker Chroma":
-                # See DeathStalkerChromaFX() in get_device_object()
-                matrix_cols = 6
-
-        if rdevice.has("dpi"):
-            dpi_x = rdevice.dpi[0]
-            dpi_y = rdevice.dpi[1]
-            dpi_min = 100
-            dpi_max = rdevice.max_dpi
-
-            default_stages = {
-                16000: [800, 1800, 4500, 9000, 16000],
-                8200: [800, 1800, 4800, 6400, 8200]
-            }
-
-            # Generate the DPI stages if they are not known
-            try:
-                dpi_stages = default_stages[dpi_max]
-            except KeyError:
-                dpi_stages = [
-                    int(dpi_max / 10),
-                    int(dpi_max / 8),
-                    int(dpi_max / 4),
-                    int(dpi_max / 2),
-                    int(dpi_max)
-                ]
-
-        if rdevice.has("poll_rate"):
-            poll_rate = rdevice.poll_rate
-
-        if rdevice.has("battery"):
-            battery_level = rdevice.battery_level
-            battery_charging = rdevice.is_charging
-
-        # Build an index of zones, parameters and what's currently set.
-        _zones = self._get_supported_zones(rdevice)
-        zone_labels, zone_icons = self._get_zone_label_and_icons(_zones, name, self._get_form_factor(rdevice))
-        zone_options = {}
-
-        def _device_has_zone_capability(capability):
-            return self._device_has_zone_capability(rdevice, zone, capability)
-
-        for zone in _zones:
-            options = []
-            rzone = self._get_zone_as_object(rdevice, zone)
-
-            # Brightness - toggle or slider?
-            brightness_parent, brightness_type = self._get_device_brightness(rdevice, zone)
-
-            if brightness_type == int:
-                options.append({
-                    "id": "brightness",
-                    "label": self._("Brightness"),
-                    "type": "slider",
-                    "value": round(brightness_parent.brightness),
-                    "min": 0,
-                    "max": 100,
-                    "step": 5,
-                    "suffix": "%",
-                    "colours": [] # n/a
-                })
-
-            elif brightness_type == bool:
-                options.append({
-                    "id": "brightness",
-                    "label": self._("Brightness"),
-                    "type": "toggle",
-                    "active": True if brightness_parent.active else False,
-                    "colours": [] # n/a
-                })
-
-            # Hardware Effects
-            current_state = self._read_persistence_storage(rdevice, zone)
-
-            effect_labels = {
-                "none": self._("None"),
-                "spectrum": self._("Spectrum"),
-                "wave": self._("Wave"),
-                "reactive": self._("Reactive"),
-                "breath": self._("Breath"),
-                "ripple": self._("Ripple"),
-                "starlight": self._("Starlight"),
-                "pulsate": self._("Pulsate"),
-                "blinking": self._("Blink"),
-                "static": self._("Static")
-            }
-
-            for effect in ["none", "spectrum", "wave", "reactive", "ripple", "static", "blinking"]:
-                if _device_has_zone_capability(effect):
-                    effect_option = {
-                        "id": effect,
-                        "type": "effect",
-                        "parameters": [],
-                        "colours": [],
-                        "active": current_state["effect"].startswith(effect)
-                    }
-
-                    try:
-                        effect_option["label"] = effect_labels[effect]
-                    except KeyError:
-                        self.debug("Unknown effect: " + effect)
-                        effect_option["label"] = self._("Unknown")
-
-                    # Add parameters and determine what is in use
-                    if effect == "wave":
-                        # Change label IDs depending on orientation.
-                        direction_1_data = "right"
-                        direction_1_label = self._("Right")
-                        direction_2_data = "left"
-                        direction_2_label = self._("Left")
-
-                        if rdevice.type == "mouse":
-                            direction_1_data = "up"
-                            direction_1_label = self._("Up")
-                            direction_2_data = "down"
-                            direction_2_label = self._("Down")
-
-                        elif rdevice.type == "mousemat":
-                            direction_1_data = "anticlock"
-                            direction_1_label = self._("Clockwise")
-                            direction_2_data = "clock"
-                            direction_2_label = self._("Anti-clockwise")
-
-                        effect_option["parameters"] = [
-                            {
-                                "id": direction_2_data,
-                                "label": direction_2_label,
-                                "data": 2,
-                                "active": current_state["wave_dir"] == 2,
-                                "colours": []
-                            },
-                            {
-                                "id": direction_1_data,
-                                "label": direction_1_label,
-                                "data": 1,
-                                "active": current_state["wave_dir"] == 1,
-                                "colours": []
-                            }
-                        ]
-
-                    elif effect == "ripple":
-                        if _device_has_zone_capability("ripple_random"):
-                            effect_option["parameters"].append({
-                                "id": "random",
-                                "label": self._("Random"),
-                                "data": "random",
-                                "active": current_state["effect"] == "rippleRandomColour",
-                                "colours": []
-                            })
-
-                        if _device_has_zone_capability("ripple"):
-                            effect_option["parameters"].append({
-                                "id": "single",
-                                "label": self._("Single"),
-                                "data": "single",
-                                "active": current_state["effect"] == "ripple",
-                                "colours": [current_state["colour_1"]]
-                            })
-
-                    elif effect == "reactive":
-                        effect_option["parameters"] = [
-                            {
-                                "id": "fast",
-                                "label": self._("Fast"),
-                                "data": 1,
-                                "active": current_state["speed"] == 1,
-                                "colours": [current_state["colour_1"]]
-                            },
-                            {
-                                "id": "medium",
-                                "label": self._("Medium"),
-                                "data": 2,
-                                "active": current_state["speed"] == 2,
-                                "colours": [current_state["colour_1"]]
-                            },
-                            {
-                                "id": "slow",
-                                "label": self._("Slow"),
-                                "data": 3,
-                                "active": current_state["speed"] == 3,
-                                "colours": [current_state["colour_1"]]
-                            },
-                            {
-                                "id": "vslow",
-                                "label": self._("Very Slow"),
-                                "data": 4,
-                                "active": current_state["speed"] == 4,
-                                "colours": [current_state["colour_1"]]
-                            }
-                        ]
-
-                    elif effect in ["static", "pulsate", "blinking"]:
-                        effect_option["colours"] = [current_state["colour_1"]]
-
-                    effect_option["active"] = True if current_state["effect"].startswith(effect) else False
-
-                    options.append(effect_option)
-
-            # There isn't a single 'lighting_breath' and 'lighting_starlight' in the capabilities list
-            # -- Breath has up to 4 parameters.
-            if True in [_device_has_zone_capability("breath_random"),
-                        _device_has_zone_capability("breath_single"),
-                        _device_has_zone_capability("breath_dual"),
-                        _device_has_zone_capability("breath_triple")]:
-                effect_option = {
-                    "id": "breath",
-                    "label": effect_labels["breath"],
-                    "type": "effect",
-                    "parameters": [],
-                    "colours": [],
-                    "active": current_state["effect"].startswith("breath")
-                }
-
-                param_labels = {
-                    "random": self._("Random"),
-                    "single": self._("Single"),
-                    "dual": self._("Dual"),
-                    "triple": self._("Triple")
-                }
-
-                for _colour_count, param in enumerate(["random", "single", "dual", "triple"]):
-                    if _device_has_zone_capability("breath" + "_" + param):
-                        _colour_list = []
-                        for c in range(1, _colour_count + 1):
-                            _colour_list.append(current_state["colour_" + str(c)])
-                        param_key = {
-                            "id": param,
-                            "label": param_labels[param],
-                            "data": param,
-                            "active": current_state["effect"].endswith(param.capitalize()),
-                            "colours": _colour_list
-                        }
-                        effect_option["parameters"].append(param_key)
-
-                options.append(effect_option)
-
-            # -- Starlight has up to 3 parameters, plus 3 speeds each.
-            if True in [_device_has_zone_capability("starlight_random"),
-                        _device_has_zone_capability("starlight_single"),
-                        _device_has_zone_capability("starlight_dual")]:
-                effect_option = {
-                    "id": "starlight",
-                    "label": effect_labels["starlight"],
-                    "type": "effect",
-                    "parameters": [],
-                    "colours": [],
-                    "active": current_state["effect"].startswith("starlight")
-                }
-
-                param_labels = {
-                    "random": self._("Random"),
-                    "single": self._("Single"),
-                    "dual": self._("Dual")
-                }
-
-                param_speeds = {
-                    "fast": self._("Fast"),
-                    "medium": self._("Medium"),
-                    "slow": self._("Slow"),
-                }
-
-                for _colour_count, param in enumerate(["random", "single", "dual"]):
-                    for speed_no, speed in enumerate(["fast", "medium", "slow"]):
-                        if _device_has_zone_capability("starlight" + "_" + param):
-                            _colour_list = []
-                            for c in range(1, _colour_count + 1):
-                                _colour_list.append(current_state["colour_" + str(c)])
-                            param_key = {
-                                "id": param,
-                                "label": "{0} ({1})".format(param_labels[param], param_speeds[speed]),
-                                "data": "{0}_{1}".format(param, speed),
-                                "active": current_state["effect"].endswith(param.capitalize()) and int(current_state["speed"]) == speed_no + 1,
-                                "colours": _colour_list
-                            }
-                            effect_option["parameters"].append(param_key)
-
-                options.append(effect_option)
-
-            # Older hardware that use the "BW2013" protocol
-            try:
-                if "razer.device.lighting.bw2013" in rdevice._available_features.keys():
-                    options.append({
-                        "id": "bw2013_pulsate",
-                        "type": "effect",
-                        "label": self._("Pulsate"),
-                        "parameters": [],
-                        "colours": [],
-                        "active": False
-                    })
-                    options.append({
-                        "id": "bw2013_static",
-                        "type": "effect",
-                        "label": self._("Static"),
-                        "parameters": [],
-                        "colours": [],
-                        "active": False
-                    })
-            except Exception as e:
-                self.debug("Workaround for BW2013 may be broken!")
-                self.debug(self.common.get_exception_as_string(e))
-
-            # Finished building options list
-            zone_options[zone] = options
-
-        # DPI is generated by Polychromatic. See below for fixed DPI devices.
-
-        # Other hardware features
-        def _init_main_if_empty():
-            if "main" not in zone_options.keys():
-                zone_options["main"] = []
-
-        # -- Game Mode
-        if rdevice.has("game_mode_led"):
-            _init_main_if_empty()
-            zone_options["main"].append({
-                "id": "game_mode",
-                "label": self._("Game Mode"),
-                "type": "toggle",
-                "active": True if rdevice.game_mode_led else False,
-                "colours": [] # n/a
-            })
-
-        # -- Fixed DPI
-        if rdevice.has("available_dpi"):
-            # Prevent Polychromatic from creating a variable DPI control
-            dpi_x = None
-
-            # Create a combo box to select this device's 'hardcoded' DPI
-            params = []
-            for value in rdevice.available_dpi:
-                params.append({
-                    "id": str(value),
-                    "label": str(value),
-                    "data": str(value),
-                    "active": str(rdevice.dpi[0]) == str(value),
-                    "colours": [] # n/a
-                })
-
-            zone_options["main"].append({
-                "id": "dpi",
-                "label": self._("DPI"),
-                "type": "multichoice",
-                "parameters": params,
-                "active": True,         # Always a DPI value
-                "colours": [] # n/a
-            })
-
-        # -- Sync DPI to hardware
-        if rdevice.has("dpi_stages"):
-            _init_main_if_empty()
-            zone_options["main"].append({
-                "id": "sync_dpi_stages",
-                "label": self._("DPI Buttons"),
-                "type": "button",
-                "button_text": self._("Sync DPI to Hardware"),
-                "parameters": [],
-                "active": True,
-                "colours": [] # n/a
-            })
-
-        # -- Poll Rate
-        if rdevice.has("poll_rate"):
-            _init_main_if_empty()
-            params = []
-
-            ids = {
-                125: "poll_low",
-                500: "poll_mid",
-                1000: "poll_high",
-                2000: "poll_hyper",
-                4000: "poll_hyper_4000",
-                8000: "poll_hyper_8000"
-            }
-            labels = {
-                125: "125 Hz (~8 ms)",
-                500: "500 Hz (~2 ms)",
-                1000: "1000 Hz (~1 ms)",
-                2000: "2000 Hz (~0.5 ms)",
-                4000: "4000 Hz (~0.25 ms)",
-                8000: "8000 Hz (~0.125 ms)"
-            }
-
-            # OpenRazer <= 3.1.0 were hardcoded
-            supported_poll_rates = [125, 500, 1000]
-
-            # OpenRazer >= 3.2.0 provides the list
-            if rdevice.has("supported_poll_rates"):
-                supported_poll_rates = rdevice.supported_poll_rates
-
-            for rate in supported_poll_rates:
-                params.append({
-                    "id": ids[rate],
-                    "label": labels[rate],
-                    "data": rate,
-                    "active": poll_rate == rate,
-                    "colours": [] # n/a
-                })
-
-            zone_options["main"].append({
-                "id": "poll_rate",
-                "label": self._("Poll Rate"),
-                "type": "multichoice",
-                "parameters": params,
-                "active": True,         # Always a poll rate
-                "colours": [] # n/a
-            })
-
-        # Low power and sleep mode are not exposed individually, but should do when battery is present
-        if rdevice.has("battery"):
-            _init_main_if_empty()
-
-            # -- Sleep Mode (in seconds)
-            try:
-                current_idle_secs = rdevice.get_idle_time()
-                current_idle_mins = int(current_idle_secs / 60)
-
-                zone_options["main"].append({
-                    "id": "idle_time",
-                    "label": self._("Sleep mode after"),
-                    "type": "slider",
-                    "value": int(current_idle_mins),
-                    "min": 1,
-                    "max": 15,
-                    "step": 1,
-                    # TODO: Needs plural support
-                    "suffix": " " + self._("minute(s)"),
-                    "colours": [] # n/a
-                })
-            except Exception as e:
-                self.debug("Could not read get_idle_time. Ignoring.")
-                self.debug(str(e))
-
-            # -- Low Power Mode (by percent)
-            try:
-                current_low_power = rdevice.get_low_battery_threshold()
-
-                zone_options["main"].append({
-                    "id": "low_battery_threshold",
-                    "label": self._("Low Power Mode"),
-                    "type": "slider",
-                    "value": int(current_low_power),
-                    "min": 1,
-                    "max": 100,
-                    "step": 1,
-                    "suffix": "%",
-                    "colours": [] # n/a
-                })
-            except Exception as e:
-                self.debug("Could not read get_low_battery_threshold. Ignoring.")
-                self.debug(str(e))
-
-        # -- Macros Info
-        if rdevice.has("macro_mode_led_effect") and rdevice.type == "keyboard":
-            _init_main_if_empty()
-            zone_options["main"].append({
-                        "id": "macro_info",
-                        "label": self._("Macros"),
-                        "type": "dialog",
-                        "button_text": self._("About Macro Recording"),
-                        "message": self._("The OpenRazer daemon provides a simple on-the-fly macro recording feature. To use:\n\n" + \
-                            "1. Press FN+[M] to enter macro mode.\n" + \
-                            "2. Press the macro key to assign to. Only M1-M5 are supported.\n" + \
-                            "3. Press the keys in sequence to record.\n" + \
-                            "4. Press FN+[M] to exit macro mode.\n\n" + \
-                            "Macros are retained in memory until the daemon is stopped. The replay speed will be instantaneous.\n\n" + \
-                            "This is not a Polychromatic feature and could disappear in future. This application intends to integrate a key rebinding feature in a future version."),
-                        "colours": [] # n/a
-                    })
-
-        # -- Key Mapping Info
-        if rdevice.type in ["keyboard", "keypad"]:
-            _init_main_if_empty()
-            zone_options["main"].append({
-                        "id": "key_info",
-                        "label": self._("Key Mapping"),
-                        "type": "dialog",
-                        "button_text": self._("About Key Mapping"),
-                        "message": self._("Currently, OpenRazer and Polychromatic do not support a convenient key rebinding feature. " + \
-                            "Polychromatic intends to integrate a key mapping solution in a future version.\n\n" + \
-                            "In the meantime, there are third party projects which provide key remapping agnostic to any input device.\n\nFor more information, visit:\n" + \
-                            "https://polychromatic.app/permalink/keymapping/"),
-                        "colours": [] # n/a
-                    })
-
-        # Prepare summary of device.
-        summary = []
-        _multiple_zones = len(_zones) > 1
-
-        # -- Gather current states for effects/brightness.
-        # -- If all zones are the same, show that status, otherwise state (Multiple)
-        # -- Not all statuses are shown at once since this can be crowded for some devices.
-        _effects = []
-        _effects_labels = {}
-        _brightness = []
-        for zone in zone_options:
-            for option in zone_options[zone]:
-                if option["type"] == "effect" and option["active"] == True:
-                    _effects.append(option["id"])
-                    _effects_labels[option["id"]] = option["label"]
-
-                if option["id"] == "brightness" and "value" in option.keys():
-                    _brightness.append(option["value"])
-
-                if option["id"] == "brightness" and "active" in option.keys():
-                     _brightness.append(option["active"])
-
-        def is_same(items):
-            return all(x == items[0] for x in items)
-
-        # -- Effects
-        if len(_effects) > 0:
-            if is_same(_effects):
-                summary.append({
-                    "icon": self.common.get_icon("options", _effects[0]),
-                    "label": _effects_labels[_effects[0]]
-                })
-            else:
-                summary.append({
-                    "icon": self.common.get_icon("options", "static"),
-                    "label": self._("(Multiple)")
-                })
-
-        # -- Brightness
-        if len(_brightness) > 0:
-            # Only show % suffix for integers
-            if not is_same(_brightness):
-                summary.append({
-                    "icon": self.common.get_icon("options", "75"),
-                    "label": self._("(Multiple)")
-                })
-            elif _brightness[0] == True:
-                summary.append({
-                    "icon": self.common.get_icon("options", "100"),
-                    "label": self._("On")
-                })
-            elif _brightness[0] in [False, 0]:
-                summary.append({
-                    "icon": self.common.get_icon("options", "50"),
-                    "label": self._("Off")
-                })
-            elif type(_brightness[0]) in [int, float]:
-                summary.append({
-                    "icon": self.common.get_icon("options", "100"),
-                    "label": "{0}%".format(_brightness[0])
-                })
-
-        # -- Game Mode
-        if game_mode:
-            summary.append({
-                "icon": self.common.get_icon("options", "game_mode"),
-                "label": self._("Game Mode Enabled")
-            })
-
-        # -- DPI
-        if dpi_x or dpi_y:
-            if dpi_x == dpi_y:
-                summary.append({
-                    "icon": self.common.get_icon("general", "dpi"),
-                    "label": "{0} DPI".format(dpi_x)
-                })
-            else:
-                summary.append({
-                    "icon": self.common.get_icon("general", "dpi"),
-                    "label": "{0}, {1} DPI".format(dpi_x, dpi_y)
-                })
-
-        # -- Poll Rate
-        if poll_rate:
-            summary.append({
-                "icon": self.common.get_icon("options", "poll_rate"),
-                "label": "{0} Hz".format(poll_rate)
-            })
-
-        # -- Battery Status
-        if battery_level:
-            if battery_charging:
-                icon = "battery-charging"
-            else:
-                if battery_level < 10:
-                    icon = "battery-0"
-                elif battery_level < 30:
-                    icon = "battery-25"
-                elif battery_level < 55:
-                    icon = "battery-50"
-                elif battery_level < 90:
-                    icon = "battery-75"
-                else:
-                    icon = "battery-100"
-
-            summary.append({
-                "icon": self.common.get_icon("general", icon),
-                "label": "{0}%".format(battery_level)
-            })
-
-        return {
-            "backend": self.backend_id,
-            "uid": uid,
-            "name": name,
-            "form_factor": form_factor,
-            "real_image": real_image,
-            "serial": serial,
-            "monochromatic": monochromatic,
-            "vid": vid,
-            "pid": pid,
-            "firmware_version": firmware_version,
-            "keyboard_layout": keyboard_layout,
-            "summary": summary,
-            "dpi_x": dpi_x,
-            "dpi_y": dpi_y,
-            "dpi_stages": dpi_stages,
-            "dpi_min": dpi_min,
-            "dpi_max": dpi_max,
-            "matrix": matrix,
-            "matrix_rows": matrix_rows,
-            "matrix_cols": matrix_cols,
-            "zone_labels": zone_labels,
-            "zone_icons": zone_icons,
-            "zone_options": zone_options
-        }
+            return self.get_exception_as_string(e)
 
     def get_device_by_serial(self, serial):
         """
-        See _backend.get_device_by_serial()
-        """
-        if not self.devices:
-            success = self._reinit_device_manager(force_refresh=True)
-            if success != True:
-                return success
-
-        for index, device in enumerate(self.devices):
-            if device.serial == serial:
-                return self.get_device(index)
-
-    def set_device_state(self, uid, zone, option_id, option_data, colours=[]):
-        """
-        See _backend.set_device_state()
+        See Backend.get_device_by_serial()
         """
         try:
-            success = self._reinit_device_manager()
-            if success != True:
-                return success
-            rdevice = self.devman.devices[uid]
-        except IndexError:
-            return None
+            for rdevice in self.devman.devices:
+                if not rdevice.has("serial"):
+                    continue
+                if rdevice.serial == serial:
+                    return self._get_device(rdevice)
         except Exception as e:
-            return self.common.get_exception_as_string(e)
+            return self.get_exception_as_string(e)
 
-        # DPI may not associated with a zone (CLI only)
-        if not zone:
-            zone = "main"
+    def _get_device(self, rdevice):
+        """
+        Returns a Backend.DeviceItem() from OpenRazer's device object.
+        """
+        # A valid serial number is essential
+        serial = ""
+        if rdevice.has("serial"):
+            serial = str(rdevice.serial)
+        if len(serial) <= 2:
+            serial = "".join(c for c in rdevice.name if c.isalnum()).upper()
+            self.debug("Got bad serial for {0}! Using dummy serial: {1}".format(rdevice.name, serial))
 
-        rzone = self._get_zone_as_object(rdevice, zone)
+        # Device details
+        device = Backend.DeviceItem()
+        device._rdevice = rdevice
+        device.name = str(rdevice.name)
+        device.form_factor = self._get_form_factor(rdevice)
+        device.real_image = self._get_device_image(rdevice)
+        device.serial = serial
+        device.monochromatic = self._is_device_monochromatic(rdevice)
 
-        # Hardware effects require up to 3 colours. Daemon uses RGB integers (0-255)
-        colour_hex = colours
-        colour_1 = [0, 255, 0]
-        colour_2 = [255, 0, 0]
-        colour_3 = [0, 0, 255]
+        _vid_pid = self._get_device_vid_pid(rdevice)
+        device.vid = _vid_pid.get("vid")
+        device.pid = _vid_pid.get("pid")
 
-        if colours:
-            try:
-                if colours[0]:
-                    colour_1 = self.common.hex_to_rgb(colours[0])
-                if colours[1]:
-                    colour_2 = self.common.hex_to_rgb(colours[1])
-                if colours[2]:
-                    colour_3 = self.common.hex_to_rgb(colours[2])
-            except IndexError:
-                # Expected, as not all colours may be needed. Use default.
-                pass
+        if rdevice.has("firmware_version"):
+            device.firmware_version = str(rdevice.firmware_version)
+
+        if rdevice.has("keyboard_layout"):
+            device.keyboard_layout = str(rdevice.keyboard_layout)
+
+        if rdevice.has("dpi") and not rdevice.has("available_dpi"):
+            device.dpi = self._get_dpi_object(rdevice)
+
+        if rdevice.has("lighting_led_matrix"):
+            device.matrix = self._get_matrix_object(rdevice)
+
+        # Initialize zones
+        device.zones = self._get_zone_objects(rdevice)
+        main_zone = device.zones[0]
+
+        # Add brightness & effects (per zone)
+        for zone in device.zones:
+            brightness = self._get_brightness_option(rdevice, zone)
+            if brightness:
+                zone.options.append(brightness)
+
+            effects = self._get_effect_options(rdevice, zone)
+            if effects:
+                zone.options += effects
+
+        workarounds = self._get_workaround_options(rdevice)
+        if workarounds:
+            main_zone.options = workarounds
+
+        # Add other "main" options
+        if rdevice.has("available_dpi"):
+            device.dpi = None
+            main_zone.options.append(self._get_dpi_fixed_object(rdevice))
+
+        if rdevice.has("dpi_stages"):
+            main_zone.options.append(self._get_dpi_sync_option(rdevice))
+
+        if rdevice.has("poll_rate"):
+            main_zone.options.append(self._get_poll_rate_option(rdevice))
+
+        if rdevice.has("game_mode_led"):
+            main_zone.options.append(self._get_game_mode_option(rdevice))
+
+        if rdevice.has("battery"):
+            main_zone.options += self._get_battery_options(rdevice)
+
+        if rdevice.has("macro_mode_led_effect") and rdevice.type == "keyboard":
+            main_zone.options.append(self._get_macro_option(rdevice))
+
+        if rdevice.type in ["keyboard", "keypad"]:
+            main_zone.options.append(self._get_key_remapping_option(rdevice))
+
+        return device
+
+    def _get_dpi_object(self, rdevice):
+        """
+        Returns a Backend.DeviceItem.DPI object.
+        This is for standard use of the .dpi function (X/Y axis support). If the
+        device has "available_dpi", use _get_fixed_dpi_object() instead.
+        """
+        class DPI(Backend.DeviceItem.DPI):
+            def __init__(self, rdevice):
+                super().__init__()
+                self._rdevice = rdevice
+                self.min = 100
+                self.max = int(rdevice.max_dpi)
+
+            def refresh(self):
+                self.x = self._rdevice.dpi[0]
+                self.y = self._rdevice.dpi[1]
+
+            def set(self, x, y):
+                self._rdevice.dpi = (int(x), int(y))
+
+        dpi = DPI(rdevice)
+
+        # Determine DPI stages, or generate them if not known
+        default_stages = {
+            16000: [800, 1800, 4500, 9000, 16000],
+            8200: [800, 1800, 4800, 6400, 8200]
+        }
 
         try:
-            # Brightness or active?
-            brightness_parent, brightness_type = self._get_device_brightness(rdevice, zone)
+            dpi.stages = default_stages[dpi.max]
+        except KeyError:
+            dpi.stages = [
+                int(dpi.max / 10),
+                int(dpi.max / 8),
+                int(dpi.max / 4),
+                int(dpi.max / 2),
+                int(dpi.max)
+            ]
 
-            if option_id == "brightness":
-                # Slider value or CLI string
-                if brightness_type in [int, str]:
-                    brightness_parent.brightness = int(option_data)
+        return dpi
 
-                elif brightness_type == bool:
-                    brightness_parent.active = option_data
-
-            # Effects and their parameters
-            elif option_id == "none":
-                rzone.none()
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "none")
-
-            elif option_id == "spectrum":
-                rzone.spectrum()
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "spectrum")
-
-            elif option_id == "wave":
-                # Params: <direction 1-2>
-                rzone.wave(int(option_data))
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "wave")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "wave_dir", option_data)
-
-            elif option_id == "reactive":
-                # Params: <red> <green> <blue> <speed 1-4>
-                rzone.reactive(colour_1[0], colour_1[1], colour_1[2], int(option_data))
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "reactive")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "speed", option_data)
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-
-            elif option_id == "blinking":
-                # Params: <red> <green> <blue>
-                rzone.blinking(colour_1[0], colour_1[1], colour_1[2])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "blinking")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-
-            elif option_id == "breath" and option_data == "random":
-                rzone.breath_random()
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "breathRandom")
-
-            elif option_id == "breath" and option_data == "single":
-                # Params: <red> <green> <blue>
-                rzone.breath_single(colour_1[0], colour_1[1], colour_1[2])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "breathSingle")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-
-            elif option_id == "breath" and option_data == "dual":
-                # Params: <red1> <green1> <blue1> <red2> <green2> <blue2>
-                rzone.breath_dual(colour_1[0], colour_1[1], colour_1[2],
-                    colour_2[0], colour_2[1], colour_2[2])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "breathDual")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_2", colour_hex[1])
-
-            elif option_id == "breath" and option_data == "triple":
-                # Params: <red1> <green1> <blue1> <red2> <green2> <blue2> <red3> <green3> <blue3>
-                rzone.breath_triple(colour_1[0], colour_1[1], colour_1[2],
-                    colour_2[0], colour_2[1], colour_2[2],
-                    colour_3[0], colour_3[1], colour_3[2])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "breathTriple")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_2", colour_hex[1])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_3", colour_hex[2])
-
-            elif option_id == "ripple" and option_data == "single":
-                # Params: <red> <green> <blue> <speed>
-                rzone.ripple(colour_1[0], colour_1[1], colour_1[2], self.ripple_refresh_rate)
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "ripple")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-
-            elif option_id == "ripple" and option_data == "random":
-                # Params: <speed>
-                rzone.ripple_random(self.ripple_refresh_rate)
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "rippleRandomColour")
-
-            elif option_id == "starlight":
-                starlight_type = option_data.split("_")[0]
-                speed_string = option_data.split("_")[1]
-                speeds = {
-                    "fast": 1,
-                    "medium": 2,
-                    "slow": 3
-                }
-                try:
-                    speed = speeds[speed_string]
-                except KeyError:
-                    self.debug("Invalid/unknown starlight speed!")
-                    return False
-
-                if starlight_type == "random":
-                    # Params: <speed>
-                    rzone.starlight_random(speed)
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "starlightRandom")
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "speed", speed)
-
-                elif starlight_type == "single":
-                    # Params: <red> <green> <blue> <speed>
-                    rzone.starlight_single(colour_1[0], colour_1[1], colour_1[2], speed)
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "starlightSingle")
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "speed", speed)
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-
-                elif starlight_type == "dual":
-                    # Params: <red1> <green1> <blue1> <red2> <green2> <blue2> <speed>
-                    rzone.starlight_dual(colour_1[0], colour_1[1], colour_1[2],
-                        colour_2[0], colour_2[1], colour_2[2], speed)
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "starlightDual")
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "speed", speed)
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-                    self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_2", colour_hex[1])
-
-            elif option_id == "static":
-                # Params: <red> <green> <blue>
-                rzone.static(colour_1[0], colour_1[1], colour_1[2])
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "effect", "static")
-                self._write_persistence_storage_fallback(rdevice, zone, rzone, "colour_1", colour_hex[0])
-
-            elif option_id == "bw2013_pulsate":
-                self._workaround_bw2013_pylib(rdevice, "pulsate")
-
-            elif option_id == "bw2013_static":
-                self._workaround_bw2013_pylib(rdevice, "static")
-
-            # Other
-            elif option_id == "game_mode":
-                # Params: <true/false>
-                rdevice.game_mode_led = option_data
-
-            elif option_id == "dpi":
-                # Params: <dpi X> <dpi Y>
-                if rdevice.has("available_dpi"):
-                    # Device only supports fixed DPI X values, such as DeathAdder 3.5G (#209)
-                    rdevice.dpi = (int(option_data), 0)
-                else:
-                    rdevice.dpi = (int(option_data[0]), int(option_data[1]))
-
-            elif option_id == "sync_dpi_stages":
-                # TODO: This can integrate better after the backend is refactored
-                # TODO: Polychromatic does not support custom X,Y values, so it's limited here.
-                # HACK: It's dirty, but directly access preferences, and use the values if enabled.
-                import json
-                pref_path = self.common.Paths().preferences
-                with open(pref_path, "r") as f:
-                    prefs = json.load(f)
-                custom = prefs["custom"]
-
-                if not custom["use_dpi_stages"]:
-                    return self._("Please set up the DPI stages in Polychromatic's preferences (under Customise).")
-
-                stages = []
-                for i in range(1, 6):
-                    stages.append(int(custom["dpi_stage_" + str(i)]))
-
-                # [active_stage, [stages: (x,y), (x,y) etc]
-                rdevice.dpi_stages = (1, [(stages[0], stages[0]),
-                                          (stages[1], stages[1]),
-                                          (stages[2], stages[2]),
-                                          (stages[3], stages[3]),
-                                          (stages[4], stages[4])])
-
-            elif option_id == "poll_rate":
-                # Params: (int)
-                rdevice.poll_rate = int(option_data)
-
-            elif option_id == "idle_time":
-                # Params: (int) [in minutes]
-                rdevice.set_idle_time(int(option_data) * 60)
-
-            elif option_id == "low_battery_threshold":
-                # Params: (int)
-                rdevice.set_low_battery_threshold(int(option_data))
-
-            else:
-                return False
-
-        except Exception as e:
-            return self.common.get_exception_as_string(e)
-
-        return True
-
-    def _workaround_bw2013_pylib(self, rdevice, effect):
+    def _get_dpi_fixed_object(self, rdevice):
         """
-        Due to bugs in the OpenRazer Python library, older devices cannot change
-        their effect to 'pulsate' or 'static' (the latter doesn't appear as a
-        capability either)
-
-        As a workaround, bypass the pylib and echo directly to the sysfs driver.
-
-        See also: #345, openrazer/openrazer#1575
+        Returns a Backend.MultipleChoiceOption object as an alternate for DPI.
+        This is used for devices that have a fixed DPI and do not support the
+        'variable' slider.
         """
-        vidpid = self._get_device_vid_pid(rdevice)
-        matrix_file = glob.glob("/sys/bus/hid/drivers/razer*/*{0}:{1}*/matrix_effect_{2}".format(vidpid["vid"], vidpid["pid"], effect), recursive=True)
+        current_dpi = int(rdevice.dpi[0])
+        parameters = []
 
-        if not matrix_file:
-            raise FileNotFoundError
+        for dpi in list(rdevice.available_dpi):
+            param = Backend.Option.Parameter()
+            param.data = int(dpi)
+            param.label = "{0} Hz".format(dpi)
+            param.active = True if dpi == current_dpi else False
+            parameters.append(param)
 
-        self.debug("Workaround BW2013 pylib: Sending byte via " + matrix_file[0])
-        with open(matrix_file[0], "w") as f:
-            f.write("1")
+        class FixedDPIOption(Backend.MultipleChoiceOption):
+            def __init__(self, rdevice, parameters):
+                super().__init__()
+                self._rdevice = rdevice
+                self.uid = "fixed_dpi"
+                self.parameters = parameters
+
+            def refresh(self):
+                current_dpi = int(self._rdevice.dpi[0])
+                for param in self.parameters:
+                    # Round up internally just in case DPI is not an exact value
+                    param.active = True if round(param.data, -1) == round(current_dpi, -1) else False
+
+            def apply(self, new_value):
+                # Device only supports fixed DPI X values, such as DeathAdder 3.5G (#209)
+                self._rdevice.dpi = (int(new_value), 0)
+
+        fixed_dpi = FixedDPIOption(rdevice, parameters)
+        fixed_dpi.label = self._("DPI")
+        fixed_dpi.icon = self.get_icon("general", "dpi")
+
+        return fixed_dpi
+
+    def _get_dpi_sync_option(self, rdevice):
+        """
+        Returns a Backend.Option derivative object used for syncing DPI stages
+        to the hardware. This is a firmware feature. Most devices don't support this
+        and require a software implementation to listen to the buttons.
+        """
+        return Backend.Option()
+
+    def _get_matrix_object(self, rdevice):
+        """
+        Returns a Backend.DeviceItem.Matrix object.
+        """
+        class OpenRazerMatrix(Backend.DeviceItem.Matrix):
+            def __init__(self, rdevice):
+                super().__init__()
+                self._rdevice = rdevice
+                self.rows = int(rdevice.fx.advanced.rows)
+                self.cols = int(rdevice.fx.advanced.cols)
+
+            def set(self, x, y, red, green, blue):
+                self._rdevice.fx.advanced.matrix[y, x] = (red, green, blue)
+
+            def draw(self):
+                self._rdevice.fx.advanced.draw()
+
+            def clear(self):
+                self._rdevice.fx.advanced.matrix.reset()
+
+        class DeathStalkerMatrix(OpenRazerMatrix):
+            """
+            Alternate matrix implementation for Razer DeathStalker Chroma, which
+            has a matrix of 12x1, but every second LED [2,4,6,8,10,12]
+            physically blends with its previous LED [1,3,5,7,9,11], which messes
+            up the lighting colours (#335)
+
+            This matrix is virtual. It'll stretch LEDs by two for each one. Example:
+                Virtual     Physical
+                0       ->  0, 1
+                5       ->  10, 11
+            """
+            def __init__(self, rdevice):
+                super().__init__(rdevice)
+                self.cols = 6
+
+            def set(self, x, y, red, green, blue):
+                self._rdevice.fx.advanced.matrix[y, (x * 2)] = (red, green, blue)
+                self._rdevice.fx.advanced.matrix[y, (x * 2) + 1] = (red, green, blue)
+
+        # OpenRazer changed this matrix after 3.1 (6 => 12)
+        if rdevice.name == "Razer DeathStalker Chroma" and rdevice.fx.advanced.cols == 12:
+            return DeathStalkerMatrix(rdevice)
+
+        return OpenRazerMatrix(rdevice)
+
+    def _get_zone_objects(self, rdevice):
+        """
+        Returns a list of Backend.DeviceItem.Zone objects.
+        """
+        zones = []
+        device_name = str(rdevice.name)
+
+        def _add_zone(zone_id, label):
+            zone = Backend.DeviceItem.Zone()
+            zone.zone_id = zone_id
+            zone.label = label
+            zone.icon = self.get_icon("zones", zone_id)
+            zones.append(zone)
+
+        # All devices have a 'main' base zone
+        form_factor = self._get_form_factor(rdevice)
+        zone = Backend.DeviceItem.Zone()
+        zone.zone_id = "main"
+        zone.label = form_factor["label"]
+        zone.icon = form_factor["icon"]
+        zones.append(zone)
+
+        if rdevice.has("lighting_scroll") or rdevice.has("lighting_scroll_active"):
+            _add_zone("scroll", self._("Scroll Wheel"))
+
+        if rdevice.has("lighting_logo") or rdevice.has("lighting_logo_active"):
+            # This zone may be more personalized for some devices
+            zone = Backend.DeviceItem.Zone()
+            zone.zone_id = "logo"
+            zone.label = self._("Logo")
+            zone.icon = self.get_icon("zones", "logo")
+
+            if device_name.startswith("Razer Nex"):
+                zone.label = self._("Hex Ring")
+                zone.icon = self.get_icon("zones", "naga-hex-ring")
+
+            if device_name.startswith("Razer Blade"):
+                zone.label = self._("Laptop Lid")
+                zone.icon = self.get_icon("zones", "blade-logo")
+
+            zones.append(zone)
+
+        if rdevice.has("lighting_left"):
+            _add_zone("left", self._("Left"))
+        if rdevice.has("lighting_right"):
+            _add_zone("right", self._("Right"))
+        if rdevice.has("lighting_backlight"):
+            _add_zone("backlight", self._("Backlight"))
+        if rdevice.has("lighting_charging"):
+            _add_zone("charging", self._("Charging"))
+        if rdevice.has("lighting_fast_charging"):
+            _add_zone("fast_charging", self._("Fast Charging"))
+        if rdevice.has("lighting_fully_charged"):
+            _add_zone("fully_charged", self._("Fully Charging"))
+
+        return zones
 
     def _get_form_factor(self, rdevice):
         """
@@ -1115,165 +463,60 @@ class Backend(_backend.Backend):
         elif device_name.find("Raptor") != -1:
             form_factor_id = "display"
 
-        return self.common.get_form_factor(self._, form_factor_id)
+        return self.get_form_factor(form_factor_id)
 
-    def _get_zone_as_object(self, rdevice, zone):
+    def _get_device_image(self, rdevice):
         """
-        Returns an object that directly references this device's "zone".
-        """
-        zone_to_device = {
-            "main": rdevice.fx,
-            "logo": rdevice.fx.misc.logo,
-            "scroll": rdevice.fx.misc.scroll_wheel,
-            "backlight": rdevice.fx.misc.backlight
-        }
+        OpenRazer doesn't store device images, they are referenced by a URL.
 
-        # Ignore missing left/right classes, most devices do not support these.
+        This function will download a copy of the image for caching purposes,
+        unless disabled by the user.
+        """
+        if not self.allow_image_download:
+            return ""
+
         try:
-            zone_to_device["left"] = rdevice.fx.misc.left
-            zone_to_device["right"] = rdevice.fx.misc.right
-        except Exception:
-            pass
+            # OpenRazer >= 2.9.0 (openrazer#1127)
+            image_url = rdevice.device_image
+        except AttributeError:
+            # Backwards compatiblity with OpenRazer <= 2.8.0
+            image_url = rdevice.razer_urls["top_img"]
+        except KeyError:
+            return ""
 
-        # Look for charging classes, most devices do not support these.
+        image_dir = os.path.join(self.get_config_store_path(), "images")
+
+        if not os.path.exists(image_dir):
+            self.debug("Creating folder for device images: " + image_dir)
+            os.makedirs(image_dir)
+
+        image_path = os.path.join(image_dir, rdevice.name + "." + image_url.split(".")[-1])
+
+        # Image already cached?
+        if os.path.exists(image_path) and os.stat(image_path).st_size > 8:
+            return image_path
+
+        # No image?
+        if not image_url:
+            self.debug("{0} does not have an image.".format(rdevice.name))
+            return ""
+
+        self.debug("Downloading device image for {0}...".format(rdevice.name))
+        self.debug("URL: " + image_url)
+
         try:
-            zone_to_device["charging"] = rdevice.fx.misc.charging
-            zone_to_device["fully_charged"] = rdevice.fx.misc.fully_charged
-            zone_to_device["fast_charging"] = rdevice.fx.misc.fast_charging
-        except Exception:
-            pass
+            r = requests.get(image_url)
+            if r.status_code == 200:
+                open(image_path, "wb").write(r.content)
+                self.debug("Success!")
+                return image_path
 
-        return zone_to_device[zone]
+            self.debug("Error: Got status code {0} for '{1}'".format(rdevice.name, str(r.status_code)))
+        except Exception as e:
+            self.debug("Error: Got exception while retrieving image for '{0}'...".format(rdevice.name))
+            self.debug(str(e) + '\n')
 
-    def _device_has_zone_capability(self, rdevice, zone, capability):
-        """
-        Returns a boolean whether the capability is available for the specified zone.
-
-        For example, "active" for zone "logo" will check "lighting_logo_active"
-        """
-        zone_to_capability = {
-            "main": "lighting",
-            "logo": "lighting_logo",
-            "scroll": "lighting_scroll",
-            "backlight": "lighting_backlight",
-            "left": "lighting_left",
-            "right": "lighting_right",
-            "charging": "lighting_charging",
-            "fast_charging": "lighting_fast_charging",
-            "fully_charged": "lighting_fully_charged",
-        }
-        return rdevice.has(zone_to_capability[zone] + "_" + capability)
-
-    def _get_supported_zones(self, rdevice):
-        """
-        Returns a list of zones that are supported by the device.
-        """
-        zones = []
-
-        if rdevice.has("lighting"):
-            zones.append("main")
-        if rdevice.has("lighting_scroll") or rdevice.has("lighting_scroll_active"):
-            zones.append("scroll")
-        if rdevice.has("lighting_logo") or rdevice.has("lighting_logo_active"):
-            zones.append("logo")
-        if rdevice.has("lighting_left"):
-            zones.append("left")
-        if rdevice.has("lighting_right"):
-            zones.append("right")
-        if rdevice.has("lighting_backlight"):
-            zones.append("backlight")
-        if rdevice.has("lighting_charging"):
-            zones.append("charging")
-        if rdevice.has("lighting_fast_charging"):
-            zones.append("fast_charging")
-        if rdevice.has("lighting_fully_charged"):
-            zones.append("fully_charged")
-
-        return zones
-
-    def _get_zone_label_and_icons(self, zones, device_name, form_factor):
-        """
-        Returns the name of icons for a device's lighting areas.
-        For example, on a Razer Hex mouse, "logo" would be hex ring buttons.
-
-        Params:
-            zones           (list)  List of zones specified in _get_supported_zones
-            device_name     (str)   Name of device, used to determine special labels
-            form_factor     (dict)  Output of self._get_form_factor()
-
-        Returns:
-            zone_labels     (dict)
-            zone_icons      (dict)
-        """
-        zone_labels = {}
-        zone_icons = {}
-
-        # Always include the 'main' zone metadata (e.g. mice DPI, name, serial)
-        zones.append("main")
-
-        labels = {
-            "logo": self._("Logo"),
-            "scroll": self._("Scroll Wheel"),
-            "backlight": self._("Backlight"),
-            "left": self._("Left"),
-            "right": self._("Right"),
-            "charging": self._("While Charging"),
-            "fast_charging": self._("While Fast Charging"),
-            "fully_charged": self._("When Fully Charged"),
-        }
-
-        for zone in zones:
-            if zone in labels:
-                label = labels[zone]
-            else:
-                label = self._("Unknown")
-
-            if zone == "logo" and device_name.startswith("Razer Nex"):
-                label = self._("Hex Ring")
-                icon = self.common.get_icon("zones", "naga-hex-ring")
-
-            elif zone == "logo" and device_name.startswith("Razer Blade"):
-                label = self._("Laptop Lid")
-                icon = self.common.get_icon("zones", "blade-logo")
-
-            else:
-                icon = self.common.get_icon("zones", zone)
-
-            # 'main' refers to the base hardware, e.g. overall mouse
-            if zone == "main":
-                label = form_factor["label"]
-                icon = form_factor["icon"]
-
-            zone_labels[zone] = label
-            zone_icons[zone] = icon
-
-        return zone_labels, zone_icons
-
-    def _get_unmanaged_razer_usb_pids(self):
-        """
-        Returns a list of PIDs of Razer hardware that is physically plugged in,
-        but is inaccessible by the daemon.
-
-        This usually means the installation is incomplete or the device is not
-        supported by the driver.
-        """
-        all_usb_pids = self.helpers.get_usb_pids_by_vid("1532")
-        reg_pids = []
-        unreg_pids = []
-
-        # Get VIDs and PIDs from daemon to exclude them.
-        if self.devices:
-            for device in self.devices:
-                vidpid = self._get_device_vid_pid(device)
-                reg_pids.append(vidpid.get("pid"))
-
-        # Identify Razer VIDs that are not registered in the daemon
-        for usb in all_usb_pids:
-            if usb in reg_pids:
-                continue
-            unreg_pids.append(usb)
-
-        return unreg_pids
+        return ""
 
     def _get_device_vid_pid(self, rdevice):
         """
@@ -1297,112 +540,79 @@ class Backend(_backend.Backend):
             "pid": pid
         }
 
-    def _get_device_image(self, rdevice):
-        """
-        OpenRazer doesn't store device images, they are referenced by a URL.
-
-        This function will download a copy of the image for caching purposes.
-        """
-        if not self.allow_image_download:
-            return ""
-
-        import requests
-
-        try:
-            # OpenRazer 2.9.0 onwards (#1127)
-            image_url = rdevice.device_image
-        except AttributeError:
-            # OpenRazer 2.8.0 but is backwards compatible
-            image_url = rdevice.razer_urls["top_img"]
-        except KeyError:
-            return ""
-
-        # Save images in Polychromatic's config directory under "device_images"
-        device_images_dir = os.path.join(self.config_store, "images")
-
-        if not os.path.exists(device_images_dir):
-            self.debug("Creating folder for device images: " + device_images_dir)
-            os.makedirs(device_images_dir)
-
-        image_path = os.path.join(device_images_dir, rdevice.name + "." + image_url.split(".")[-1])
-
-        # Image already cached?
-        if os.path.exists(image_path) and os.stat(image_path).st_size > 8:
-            return image_path
-
-        # No image?
-        if not image_url:
-            self.debug("No device image specified for " + rdevice.name)
-            return ""
-
-        self.debug("Retrieving device image for " + rdevice.name)
-        self.debug("URL: " + image_url)
-
-        try:
-            r = requests.get(image_url)
-            if r.status_code == 200:
-                open(image_path, "wb").write(r.content)
-                self.debug("Success!")
-                return image_path
-            self.debug("Error: Got status code {0} for '{1}'".format(rdevice.name, str(r.status_code)))
-        except Exception as e:
-            self.debug("Error: Got exception while retrieving image for '{0}'...".format(rdevice.name))
-            self.debug(str(e) + '\n')
-
-        return ""
-
     def _is_device_monochromatic(self, device):
         """
         Returns a boolean to state whether the device supports per-lighting but
         only works with the 'green' value from RGB.
         """
-        # E.g. Razer BlackWidow Ultimate 2016 only outputs "green" RGB
+        # Razer BlackWidow Ultimate keyboards only output "green" RGB
         if str(device.name).find("Ultimate") != -1 and device.type == "keyboard":
             return True
 
         return False
 
-    def _get_device_brightness(self, rdevice, zone):
+    def _map_rdevice_to_zone(self, rdevice, zone):
         """
-        Returns both the object and data type required for setting the brightness
-        of the specified zone.
-
-        OpenRazer has two kinds of adjusting lighting:
-            .brightness = a variable between 0 and 100.
-            .active = an on/off state.
-
-        Returns None if brightness is unsupported for the zone.
-
-        Returns a list:
-            (object)        The parent object to reference 'brightness' or 'active'
-            (data type)     The data type expected by this object.
-
-        Example returns:
-            - [a.fx, int]               for main 'brightness'
-            - [a.fx.misc.logo, bool]    for logo 'active'
+        Returns an object that directly references the OpenRazer's device "zone".
         """
-        # -- Device uses a variable (0-100) and it's 'main' so use the root element
-        if rdevice.has("brightness") and zone == "main":
-            return [rdevice, int]
+        zone_to_device = {
+            "main": rdevice.fx,
+            "logo": rdevice.fx.misc.logo,
+            "scroll": rdevice.fx.misc.scroll_wheel,
+            "backlight": rdevice.fx.misc.backlight
+        }
 
-        rzone = self._get_zone_as_object(rdevice, zone)
+        # Introduced in OpenRazer 2.6.0, but not all devices list these anyway.
+        try:
+            zone_to_device["left"] = rdevice.fx.misc.left
+            zone_to_device["right"] = rdevice.fx.misc.right
+        except KeyError:
+            pass
 
-        # -- Device is a 'brightness' nested under the zone object
-        if self._device_has_zone_capability(rdevice, zone, "brightness"):
-            return [rzone, int]
+        # Introduced in OpenRazer 3.0.0, but not all devices list these anyway.
+        try:
+            zone_to_device["charging"] = rdevice.fx.misc.charging
+            zone_to_device["fully_charged"] = rdevice.fx.misc.fully_charged
+            zone_to_device["fast_charging"] = rdevice.fx.misc.fast_charging
+        except KeyError:
+            pass
 
-        # -- Device uses an on/off state (zones only)
-        if self._device_has_zone_capability(rdevice, zone, "active"):
-            return [rzone, bool]
+        return zone_to_device[zone.zone_id]
 
-        # -- Device does not support brightness/toggle options
-        return [None, None]
-
-    def _convert_colour_bytes(self, raw):
+    def _has_zone_capability(self, rdevice, zone, capability):
         """
-        Convert the daemon's '.colors' function to a string hex.
+        Returns a boolean whether the capability is available for the specified zone.
+        For example, "active" for zone "logo" will check "lighting_logo_active"
         """
-        input_hex = str(raw.hex())
+        zone_to_capability = {
+            "main": "lighting",
+            "logo": "lighting_logo",
+            "scroll": "lighting_scroll",
+            "backlight": "lighting_backlight",
+            "left": "lighting_left",
+            "right": "lighting_right",
+            "charging": "lighting_charging",
+            "fast_charging": "lighting_fast_charging",
+            "fully_charged": "lighting_fully_charged",
+        }
+
+        # Brightness for the "root" (main) zone does not use the "lighting_" prefix.
+        if capability == "brightness" and zone.zone_id == "main" and rdevice.has("brightness"):
+            return True
+
+        return rdevice.has(zone_to_capability[zone.zone_id] + "_" + capability)
+
+    def _convert_colour_bytes(self, rzone):
+        """
+        Convert the daemon's '.colors' function to a list consisting of #RRGGBB strings.
+        """
+        try:
+            input_hex = rzone.colors.hex()
+        except Exception:
+            # Not all devices have colour persistence available if unnecessary for device/zone.
+            # There is no other way but to try and fail gracefully (openrazer/openrazer#1380)
+            return ["#000000", "#000000", "#000000"]
+
         primary_hex = "#000000"
         secondary_hex = "#000000"
         tertiary_hex = "#000000"
@@ -1416,11 +626,745 @@ class Backend(_backend.Backend):
         if len(input_hex) >= 18:
             tertiary_hex = input_hex[12:18]
 
-        return {
-            "primary": "#" + primary_hex,
-            "secondary": "#" + secondary_hex,
-            "tertiary": "#" + tertiary_hex
+        return [
+            "#" + primary_hex,
+            "#" + secondary_hex,
+            "#" + tertiary_hex
+        ]
+
+    def _get_brightness_option(self, rdevice, zone):
+        """
+        Returns a Backend.Option derivative object based on the type of
+        brightness for the specified zone and device.
+
+        OpenRazer has two kinds of lighting:
+            .brightness = a variable between 0 and 100.
+            .active = an on/off state.
+
+        Returns None if brightness is unsupported for the zone.
+        """
+        if rdevice.has("brightness") and zone.zone_id == "main":
+            # This is provided in the root element, not .fx
+            rzone = rdevice
+        else:
+            rzone = self._map_rdevice_to_zone(rdevice, zone)
+
+        # Device is a 'brightness' % variable
+        if self._has_zone_capability(rdevice, zone, "brightness"):
+            class BrightnessSlider(Backend.SliderOption):
+                def __init__(self, rzone):
+                    super().__init__()
+                    self._rzone = rzone
+                    self.uid = "brightness"
+                    self.value = int(round(rzone.brightness))
+                    self.min = 0
+                    self.max = 100
+                    self.step = 5
+                    self.suffix = "%"
+
+                def refresh(self):
+                    self.value = int(round(self._rzone.brightness))
+
+                def apply(self, new_value):
+                    self._rzone.brightness = new_value
+
+            slider = BrightnessSlider(rzone)
+            slider.label = self._("Brightness")
+            slider.icon = self.get_icon("options", "brightness")
+            return slider
+
+        # Device uses an on/off state
+        if self._has_zone_capability(rdevice, zone, "active"):
+            class BrightnessToggle(Backend.ToggleOption):
+                def __init__(self, rzone):
+                    super().__init__()
+                    self._rzone = rzone
+                    self.uid = "brightness"
+                    self.active = True if rzone.active else False
+
+                def refresh(self):
+                    self.active = True if self._rzone.active else False
+
+                def apply(self, new_state):
+                    self._rzone.active = new_state
+
+            toggle = BrightnessToggle(rzone)
+            toggle.label = self._("Brightness")
+            toggle.icon = self.get_icon("options", "brightness")
+            toggle.icon_enable = self.get_icon("params", "100")
+            toggle.icon_disable = self.get_icon("params", "0")
+            toggle.label_enable = self._("On")
+            toggle.label_disable = self._("Off")
+            toggle.label_toggle = self._("Enabled")
+            return toggle
+
+        # Device does not support this option
+        return None
+
+    def _get_effect_options(self, rdevice, zone):
+        """
+        Returns list of Backend.EffectOption objects by determining
+        which options/parameters are available for this device and zone.
+        """
+        rzone = self._map_rdevice_to_zone(rdevice, zone)
+        options = []
+        current_state = self._read_persistence_storage(rdevice, zone)
+        current_colours = self._convert_colour_bytes(rzone)
+
+        has_ripple = self._has_zone_capability(rdevice, zone, "ripple")
+        has_ripple_random = self._has_zone_capability(rdevice, zone, "ripple_random")
+
+        # There isn't a single 'lighting_breath' in the capabilities list
+        has_breath_random = self._has_zone_capability(rdevice, zone, "breath_random")
+        has_breath_single = self._has_zone_capability(rdevice, zone, "breath_single")
+        has_breath_dual = self._has_zone_capability(rdevice, zone, "breath_dual")
+        has_breath_triple = self._has_zone_capability(rdevice, zone, "breath_triple")
+
+        # There isn't a single 'lighting_starlight' in the capabilities list
+        has_starlight_random = self._has_zone_capability(rdevice, zone, "starlight_random")
+        has_starlight_single = self._has_zone_capability(rdevice, zone, "starlight_single")
+        has_starlight_dual = self._has_zone_capability(rdevice, zone, "starlight_dual")
+
+        if self._has_zone_capability(rdevice, zone, "none"):
+            class NoneOption(Backend.EffectOption):
+                def __init__(self, rzone):
+                    super().__init__()
+                    self._rzone = rzone
+                    self.uid = "none"
+
+                def refresh(self):
+                    self.active = True if str(self._rzone.effect) == "none" else False
+
+                def apply(self, param=None):
+                    self._rzone.none()
+
+            option = NoneOption(rzone)
+            option.label = self._("None")
+            option.icon = self.get_icon("options", "none")
+            options.append(option)
+
+        if self._has_zone_capability(rdevice, zone, "spectrum"):
+            class SpectrumOption(Backend.EffectOption):
+                def __init__(self, rzone):
+                    super().__init__()
+                    self._rzone = rzone
+                    self.uid = "spectrum"
+
+                def refresh(self):
+                    self.active = True if str(self._rzone.effect) == "spectrum" else False
+
+                def apply(self, param=None):
+                    self._rzone.spectrum()
+
+            option = SpectrumOption(rzone)
+            option.label = self._("Spectrum")
+            option.icon = self.get_icon("options", "spectrum")
+            options.append(option)
+
+        if self._has_zone_capability(rdevice, zone, "wave"):
+            class WaveOption(Backend.EffectOption):
+                def __init__(self, rzone):
+                    super().__init__()
+                    self._rzone = rzone
+                    self.uid = "wave"
+
+                def refresh(self):
+                    self.active = True if str(self._rzone.effect) == "wave" else False
+                    for param in self.parameters:
+                        param.active = True if int(self._rzone.wave_dir) == param.data else False
+
+                def apply(self, direction):
+                    # direction is an int: 1 or 2
+                    self._rzone.wave(direction.data)
+
+            option = WaveOption(rzone)
+            option.label = self._("Wave")
+            option.icon = self.get_icon("options", "wave")
+
+            direction_1 = Backend.Option.Parameter()
+            direction_1.data = 1
+
+            direction_2 = Backend.Option.Parameter()
+            direction_2.data = 2
+
+            # Change parameter labels depending on orientation/device
+            if rdevice.type == "mouse":
+                direction_1.label = self._("Up")
+                direction_1.icon  = self.get_icon("params", "up")
+                direction_2.label = self._("Down")
+                direction_2.icon  = self.get_icon("params", "down")
+
+            elif rdevice.type == "mousemat":
+                direction_1.label = self._("Clockwise")
+                direction_1.icon  = self.get_icon("params", "clock")
+                direction_2.label = self._("Anti-clockwise")
+                direction_2.icon  = self.get_icon("params", "anticlock")
+
+            else:
+                direction_1.label = self._("Right")
+                direction_1.icon = self.get_icon("params", "right")
+                direction_2.label = self._("Left")
+                direction_2.icon = self.get_icon("params", "left")
+
+            option.parameters = [direction_2, direction_1]
+            options.append(option)
+
+        if has_ripple or has_ripple_random:
+            class RippleOption(Backend.EffectOption):
+                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                    super().__init__()
+                    self._rzone = rzone
+                    self._convert_colour_bytes = convert_colour_bytes
+                    self.uid = "ripple"
+                    self.colours = current_colours
+
+                def refresh(self):
+                    current_effect = str(self._rzone.effect)
+                    self.active = True if current_effect in ["ripple", "rippleRandomColour"] else False
+                    for param in self.parameters:
+                        if param.data == "random":
+                            param.active = True if current_effect == "rippleRandomColour" else False
+                        elif param.data == "single":
+                            param.active = True if current_effect == "ripple" else False
+                    self.colours = self._convert_colour_bytes(self._rzone)
+
+                def apply(self, ripple_type):
+                    if str(ripple_type) == "random":
+                        self._rzone.ripple_random()
+                    elif str(ripple_type) == "single":
+                        self._rzone.ripple()
+
+            option = RippleOption(rzone, current_colours, self._convert_colour_bytes)
+            option.label = self._("Ripple")
+            option.icon = self.get_icon("options", "ripple")
+
+            if has_ripple_random:
+                random = Backend.Option.Parameter()
+                random.data = "random"
+                random.label = self._("Random")
+                random.icon = self.get_icon("params", "random")
+                option.parameters.append(random)
+
+            if has_ripple:
+                single = Backend.Option.Parameter()
+                single.data = "single"
+                single.label = self._("Single")
+                single.icon = self.get_icon("params", "single")
+                single.colours_required = 1
+                option.parameters.append(single)
+
+            options.append(option)
+
+        if self._has_zone_capability(rdevice, zone, "reactive"):
+            class ReactiveOption(Backend.EffectOption):
+                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                    super().__init__()
+                    self._rzone = rzone
+                    self._convert_colour_bytes = convert_colour_bytes
+                    self.uid = "reactive"
+                    self.colours_required = 1
+                    self.colours = current_colours
+
+                def refresh(self):
+                    self.active = True if str(self._rzone.effect) == "reactive" else False
+                    speed = int(self._rzone.speed)
+                    for param in self.parameters:
+                        param.active = True if speed == param.data else False
+                    self.colours = self._convert_colour_bytes(self._rzone)
+
+                def apply(self, speed):
+                    rgb = common.hex_to_rgb(self.colours[0])
+                    self._rzone.reactive(rgb[0], rgb[1], rgb[2], int(speed))
+
+            option = ReactiveOption(rzone, current_colours, self._convert_colour_bytes)
+            option.label = self._("Reactive")
+            option.icon = self.get_icon("options", "reactive")
+
+            fast = Backend.Option.Parameter()
+            fast.data = 1
+            fast.label = self._("Fast (0.5s)")
+            fast.icon = self.get_icon("params", "fast")
+
+            medium = Backend.Option.Parameter()
+            medium.data = 2
+            medium.label = self._("Medium (1s)")
+
+            slow = Backend.Option.Parameter()
+            slow.data = 3
+            slow.label = self._("Slow (1.5s)")
+
+            vslow = Backend.Option.Parameter()
+            vslow.data = 4
+            vslow.label = self._("Very Slow (2s)")
+            vslow.icon = self.get_icon("params", "slow")
+
+            for param in [fast, medium, slow, vslow]:
+                option.parameters.append(param)
+
+            options.append(option)
+
+        if self._has_zone_capability(rdevice, zone, "blinking"):
+            # Buggy and pretty much unused!
+            # - API only exposes for 'logo' and 'scroll' zones.
+            # - Only the Chroma Mug Holder supports this (as of 3.2.0)
+            class BlinkingOption(Backend.EffectOption):
+                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                    super().__init__()
+                    self._rzone = rzone
+                    self._convert_colour_bytes = convert_colour_bytes
+                    self.uid = "blinking"
+                    self.colours_required = 1
+                    self.colours = current_colours
+
+                def refresh(self):
+                    self.active = True if str(self._rzone.effect) == "blinking" else False
+                    self.colours = self._convert_colour_bytes(self._rzone)
+
+                def apply(self, param=None):
+                    rgb = common.hex_to_rgb(self.colours[0])
+                    self._rzone.blinking(rgb[0], rgb[1], rgb[2])
+
+            option = BlinkingOption(rzone, current_colours, self._convert_colour_bytes)
+            option.label = self._("Blinking")
+            option.icon = self.get_icon("options", "blinking")
+            options.append(option)
+
+        if self._has_zone_capability(rdevice, zone, "static"):
+            class StaticOption(Backend.EffectOption):
+                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                    super().__init__()
+                    self._rzone = rzone
+                    self._convert_colour_bytes = convert_colour_bytes
+                    self.uid = "static"
+                    self.colours_required = 1
+                    self.colours = current_colours
+
+                def refresh(self):
+                    self.active = True if str(self._rzone.effect) == "static" else False
+                    self.colours = self._convert_colour_bytes(self._rzone)
+
+                def apply(self, param=None):
+                    rgb = common.hex_to_rgb(self.colours[0])
+                    self._rzone.static(rgb[0], rgb[1], rgb[2])
+
+            option = StaticOption(rzone, current_colours, self._convert_colour_bytes)
+            option.label = self._("Static")
+            option.icon = self.get_icon("options", "static")
+            options.append(option)
+
+        if has_breath_random or has_breath_single or has_breath_dual or has_breath_triple:
+            class BreathOption(Backend.EffectOption):
+                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                    super().__init__()
+                    self._rzone = rzone
+                    self._convert_colour_bytes = convert_colour_bytes
+                    self.uid = "breath"
+                    self.colours = current_colours
+
+                def refresh(self):
+                    current_effect = str(self._rzone.effect)
+                    if not current_effect.startswith("breath"):
+                        self.active = False
+                        return
+                    self.active = True
+                    current_breath_type = current_effect.split("breath")[1].lower()
+                    for param in self.parameters:
+                        param.active = True if current_breath_type == param.data else False
+                    self.colours = self._convert_colour_bytes(self._rzone)
+
+                def apply(self, breath_type):
+                    rgb = []
+                    for colour in self.colours:
+                        rgb.append(common.hex_to_rgb(colour))
+
+                    if breath_type == "random":
+                        self._rzone.breath_random()
+                    elif breath_type == "single":
+                        self._rzone.breath_single(rgb[0][0], rgb[0][1], rgb[0][2])
+                    elif breath_type == "dual":
+                        self._rzone.breath_dual(rgb[0][0], rgb[0][1], rgb[0][2],
+                                                rgb[1][0], rgb[1][1], rgb[1][2])
+                    elif breath_type == "triple":
+                        self._rzone.breath_triple(rgb[0][0], rgb[0][1], rgb[0][2],
+                                                  rgb[1][0], rgb[1][1], rgb[1][2],
+                                                  rgb[2][0], rgb[2][1], rgb[2][2])
+                    else:
+                        raise KeyError("Unknown breath type")
+
+            option = BreathOption(rzone, current_colours, self._convert_colour_bytes)
+            option.label = self._("Breath")
+            option.icon = self.get_icon("options", "breath")
+
+            if has_breath_random:
+                random = Backend.Option.Parameter()
+                random.data = "random"
+                random.label = self._("Random")
+                random.icon = self.get_icon("params", "random")
+                option.parameters.append(random)
+
+            if has_breath_single:
+                single = Backend.Option.Parameter()
+                single.data = "single"
+                single.label = self._("Single")
+                single.icon = self.get_icon("params", "single")
+                single.colours_required = 1
+                option.parameters.append(single)
+
+            if has_breath_dual:
+                dual = Backend.Option.Parameter()
+                dual.data = "dual"
+                dual.label = self._("Dual")
+                dual.icon = self.get_icon("params", "dual")
+                dual.colours_required = 2
+                option.parameters.append(dual)
+
+            if has_breath_triple:
+                triple = Backend.Option.Parameter()
+                triple.data = "triple"
+                triple.label = self._("Triple")
+                triple.icon = self.get_icon("params", "triple")
+                triple.colours_required = 3
+                option.parameters.append(triple)
+
+            options.append(option)
+
+        if has_starlight_random or has_starlight_single or has_starlight_dual:
+            class StarlightOption(Backend.EffectOption):
+                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                    super().__init__()
+                    self._rzone = rzone
+                    self._convert_colour_bytes = convert_colour_bytes
+                    self.uid = "starlight"
+                    self.colours = current_colours
+
+                def refresh(self):
+                    current_effect = str(self._rzone.effect)
+                    if not current_effect.startswith("starlight"):
+                        self.active = False
+                        return
+                    self.active = True
+                    current_breath = current_effect.split("starlight")[1].lower()
+                    current_speed = int(self._rzone.speed)
+                    self.active = True if current_effect.startswith("starlight") else False
+                    for param in self.parameters:
+                        param.active = False
+                        if current_breath == param.data and current_speed == param._speed:
+                            param.active = True
+                    self.colours = self._convert_colour_bytes(self._rzone)
+
+                def apply(self, param):
+                    # Param Example: "random:2" for a Medium (2) Random Starlight
+                    starlight_type = param.data.split(":")[0]
+                    starlight_speed = int(param.data.split(":")[1])
+
+                    rgb = []
+                    for colour in self.colours:
+                        rgb.append(common.hex_to_rgb(colour))
+
+                    if starlight_type == "random":
+                        self._rzone.starlight_random(starlight_speed)
+                    elif starlight_type == "single":
+                        self._rzone.starlight_single(rgb[0][0], rgb[0][1], rgb[0][2], starlight_speed)
+                    elif starlight_type == "dual":
+                        self._rzone.starlight_dual(rgb[0][0], rgb[0][1], rgb[0][2],
+                                                   rgb[1][0], rgb[1][1], rgb[1][2], starlight_speed)
+                    else:
+                        raise KeyError("Unknown starlight type")
+
+            option = StarlightOption(rzone, current_colours, self._convert_colour_bytes)
+            option.label = self._("Starlight")
+            option.icon = self.get_icon("options", "starlight")
+
+            speeds = {
+                1: self._("Fast"),
+                2: self._("Medium"),
+                3: self._("Slow"),
+            }
+
+            if has_starlight_random:
+                for speed in speeds.keys():
+                    random = Backend.Option.Parameter()
+                    random.data = "random:" + str(speed)
+                    random.label = "{0} ({1})".format(self._("Random"), speeds[speed])
+                    random.icon = self.get_icon("params", "random")
+                    option.parameters.append(random)
+
+            if has_starlight_single:
+                for speed in speeds.keys():
+                    single = Backend.Option.Parameter()
+                    single.data = "single:" + str(speed)
+                    single.label = "{0} ({1})".format(self._("Single"), speeds[speed])
+                    single.icon = self.get_icon("params", "single")
+                    single.colours_required = 1
+                    option.parameters.append(single)
+
+            if has_starlight_dual:
+                for speed in speeds.keys():
+                    dual = Backend.Option.Parameter()
+                    dual.data = "dual:" + str(speed)
+                    dual.label = "{0} ({1})".format(self._("Dual"), speeds[speed])
+                    dual.icon = self.get_icon("params", "dual")
+                    dual.colours_required = 2
+                    option.parameters.append(dual)
+
+            options.append(option)
+
+        return options
+
+    def _get_workaround_options(self, rdevice):
+        """
+        If applicable, return a list of option objects that workaround the
+        OpenRazer Python library due to bugs in the API.
+
+        #1: Devices speaking the "BW2013" protocol can't set pulsate or static.
+            - The latter doesn't appear as a capability either. These devices do not
+            accept parameters or colours.
+            - As a workaround, bypass the pylib and echo directly to the sysfs driver.
+            - See also: #345, openrazer/openrazer#1575
+        """
+        try:
+            if "razer.device.lighting.bw2013" in rdevice._available_features.keys():
+                vidpid = self._get_device_vid_pid(rdevice)
+                try:
+                    matrix_file_pulsate = glob.glob("/sys/bus/hid/drivers/razer*/*{0}:{1}*/matrix_effect_pulsate".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
+                    matrix_file_static = glob.glob("/sys/bus/hid/drivers/razer*/*{0}:{1}*/matrix_effect_static".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
+                except IndexError:
+                    # Check the fake driver instead
+                    matrix_file_pulsate = glob.glob("/tmp/**/*{0}:{1}*/matrix_effect_pulsate".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
+                    matrix_file_static = glob.glob("/tmp/**/*{0}:{1}*/matrix_effect_static".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
+
+                class PulsateOptionBW2013(Backend.EffectOption):
+                    def __init__(self, sysfs_path):
+                        super().__init__()
+                        self.sysfs_path = sysfs_path
+                        self.uid = "pulsate"
+
+                    def refresh(self):
+                        # FIXME: Use file-based persistence
+                        self.active = False
+
+                    def apply(self, param=None):
+                        with open(self.sysfs_path, "w") as f:
+                            f.write("1")
+
+                class StaticOptionBW2013(Backend.EffectOption):
+                    def __init__(self, sysfs_path):
+                        super().__init__()
+                        self.sysfs_path = sysfs_path
+                        self.uid = "static"
+
+                    def refresh(self):
+                        # FIXME: Use file-based persistence
+                        self.active = False
+
+                    def apply(self, param=None):
+                        with open(self.sysfs_path, "w") as f:
+                            f.write("1")
+
+                pulsate = PulsateOptionBW2013(matrix_file_pulsate)
+                pulsate.label = self._("Pulsate")
+                pulsate.icon = self.get_icon("options", "pulsate")
+
+                static = StaticOptionBW2013(matrix_file_static)
+                static.label = self._("Static")
+                static.icon = self.get_icon("options", "static")
+
+                self.debug("Using sysfs workaround for Pulsate/Static")
+                return [pulsate, static]
+
+        except AttributeError:
+            self.debug("Can't check _available_features as not supported by library. Omitting any workarounds.")
+
+        return None
+
+    def _get_poll_rate_option(self, rdevice):
+        """
+        Returns a Backend.Option derivative object for setting a mouse's poll rate.
+        """
+        current_rate = int(rdevice.poll_rate)
+
+        # OpenRazer <= 3.1.0 had unexposed hardcoded values
+        supported_poll_rates = [125, 500, 1000]
+
+        # OpenRazer >= 3.2.0 provides the list
+        if rdevice.has("supported_poll_rates"):
+            supported_poll_rates = rdevice.supported_poll_rates
+
+        labels = {
+            125: self._("125 Hz (8 msecs)"),
+            500: self._("500 Hz (2 msecs)"),
+            1000: self._("1000 Hz (1 msec)"),
+            2000: self._("2000 Hz (0.5 msec)"),
+            4000: self._("4000 Hz (0.25 msec)"),
+            8000: self._("8000 Hz (0.125 msec)"),
         }
+
+        parameters = []
+
+        for rate in supported_poll_rates:
+            param = Backend.Option.Parameter()
+            param.data = rate
+            param.active = True if current_rate == rate else False
+
+            try:
+                param.label = labels[rate]
+            except KeyError:
+                param.label = "{0} Hz".format(str(rate))
+
+            if rate > 1000:
+                param.icon = self.get_icon("params", "poll_hyper")
+            elif rate > 500:
+                param.icon = self.get_icon("params", "poll_high")
+            elif rate == 500:
+                param.icon = self.get_icon("params", "poll_med")
+            elif rate < 500:
+                param.icon = self.get_icon("params", "poll_low")
+
+            parameters.append(param)
+
+        class PollRateOption(Backend.MultipleChoiceOption):
+            def __init__(self, rdevice, parameters):
+                super().__init__()
+                self._rdevice = rdevice
+                self.uid = "poll_rate"
+                self.parameters = parameters
+
+            def refresh(self):
+                current_rate = int(self._rdevice.poll_rate)
+                for param in self.parameters:
+                    param.active = True if param.data == current_rate else False
+
+            def apply(self, new_value):
+                self._rdevice.poll_rate = int(new_value)
+
+        poll_rate = PollRateOption(rdevice, parameters)
+        poll_rate.label = self._("Poll Rate")
+        poll_rate.icon = self.get_icon("options", "poll_rate")
+        return poll_rate
+
+    def _get_game_mode_option(self, rdevice):
+        """
+        Returns a Backend.Option derivative object for the hardware's game mode feature.
+        """
+        class GameModeOption(Backend.ToggleOption):
+            def __init__(self, rdevice):
+                super().__init__()
+                self._rdevice = rdevice
+                self.uid = "game_mode"
+
+            def refresh(self):
+                self.active = True if rdevice.game_mode_led else False
+
+            def apply(self, state):
+                self._rdevice.game_mode_led = state
+
+        option = GameModeOption(rdevice)
+        option.label =  self._("Game Mode")
+        option.label_toggle = self._("Disable Alt+Tab, Alt+F4 and Win keys")
+        option.icon = self.get_icon("options", "game_mode")
+        option.icon_enable = self.get_icon("options", "game_mode")
+        option.icon_disable = self.get_icon("options", "game_mode_off")
+        return option
+
+    def _get_battery_options(self, rdevice):
+        """
+        Returns a list of Backend.Option derivative objects for power saving features.
+        """
+        options = []
+
+        # Low power and sleep mode are not exposed as individual capabilities.
+        # Most battery powered devices don't support these.
+        try:
+            # This is the amount of time before the device enters "sleep mode"
+            class IdleTimeOption(Backend.SliderOption):
+                def __init__(self, rdevice):
+                    # Device stores idle time in seconds. Present as minutes.
+                    super().__init__()
+                    self._rdevice = rdevice
+                    self.uid = "idle_time"
+                    self.min = 1
+                    self.max = 15
+
+                def refresh(self):
+                    self.value = int(self._rdevice.get_idle_time()) / 60
+
+                def apply(self, new_value):
+                    self._rdevice.set_idle_time(int(new_value) * 60)
+
+            idle_time = IdleTimeOption(rdevice)
+            idle_time.label = self._("Sleep mode after")
+            idle_time.icon = self.get_icon("options", "sleep")
+            idle_time.suffix = self._("minute")
+            idle_time.suffix_plural = self._("minutes")
+            idle_time.refresh()
+            options.append(idle_time)
+
+        except Exception as e:
+            self.debug("Device has battery, but does not support 'idle_time'")
+            self.debug(str(e))
+
+        try:
+            # This is the battery percentage before the device enters a low power mode.
+            class LowBatteryThresholdOption(Backend.SliderOption):
+                def __init__(self, rdevice):
+                    super().__init__()
+                    self._rdevice = rdevice
+                    self.uid = "low_battery_threshold"
+                    self.min = 1
+                    self.max = 100
+                    self.suffix = "%"
+                    self.suffix_plural = "%"
+
+                def refresh(self):
+                    self.value = int(self._rdevice.get_low_battery_threshold())
+
+                def apply(self, new_value):
+                    self._rdevice.set_low_battery_threshold(int(new_value))
+
+            low_bat_thres = LowBatteryThresholdOption(rdevice)
+            low_bat_thres.label = self._("Low Power Mode")
+            low_bat_thres.icon = self.get_icon("options", "low_battery")
+            low_bat_thres.refresh()
+            options.append(low_bat_thres)
+
+        except Exception as e:
+            self.debug("Device has battery, but does not support 'low_battery_threshold'")
+            self.debug(str(e))
+
+        return options
+
+    def _get_macro_option(self, rdevice):
+        """
+        Returns a Backend.Option derivative object to explain macro support.
+        """
+        option = Backend.DialogOption()
+        option.uid = "info_macros"
+        option.label = self._("Macros")
+        option.icon = self.get_icon("general", "info")
+        option.button_label = self._("About Macro Recording")
+        option.message = self._("The OpenRazer daemon provides a simple on-the-fly macro recording feature. To use:\n\n" + \
+            "1. Press FN+[M] to enter macro mode.\n" + \
+            "2. Press the macro key to assign to. Only M1-M5 are supported.\n" + \
+            "3. Press the keys in sequence to record.\n" + \
+            "4. Press FN+[M] to exit macro mode.\n\n" + \
+            "Macros are retained in memory until the daemon is stopped. The replay speed will be instantaneous.\n\n" + \
+            "This is not a Polychromatic feature and could disappear in future. This application intends to integrate a key rebinding feature in a future version.")
+        return option
+
+    def _get_key_remapping_option(self, rdevice):
+        """
+        Returns a Backend.Option derivative object to explain key remapping support.
+        """
+        option = Backend.DialogOption()
+        option.uid = "info_mapping"
+        option.label = self._("Key Mapping")
+        option.icon = self.get_icon("general", "info")
+        option.button_label = self._("About Key Mapping")
+        option.message = self._("Currently, OpenRazer and Polychromatic do not support a convenient key rebinding feature. " + \
+            "Polychromatic intends to integrate a key mapping solution in a future version.\n\n" + \
+            "In the meantime, there are third party projects which provide key remapping agnostic to any input device.\n\nFor more information, visit:\n" + \
+            "https://polychromatic.app/permalink/keymapping/")
+        return option
 
     def _read_persistence_storage(self, rdevice, zone):
         """
@@ -1428,7 +1372,7 @@ class Backend(_backend.Backend):
         colours and parameters. If the daemon currently running does not have
         this feature, continue with a file-based fallback.
         """
-        rzone = self._get_zone_as_object(rdevice, zone)
+        rzone = self._map_rdevice_to_zone(rdevice, zone)
 
         try:
             if not hasattr(rzone, "effect"):
@@ -1449,13 +1393,12 @@ class Backend(_backend.Backend):
             }
 
         try:
-            colours = self._convert_colour_bytes(rzone.colors)
-
+            colours = self._convert_colour_bytes(rzone)
             return {
                 "effect": str(rzone.effect),
-                "colour_1": colours["primary"],
-                "colour_2": colours["secondary"],
-                "colour_3": colours["tertiary"],
+                "colour_1": colours[0],
+                "colour_2": colours[1],
+                "colour_3": colours[2],
                 "wave_dir": int(rzone.wave_dir),
                 "speed": int(rzone.speed)
             }
@@ -1468,7 +1411,7 @@ class Backend(_backend.Backend):
         """
         Prepare the 'fallback' persistence storage if the daemon's is unavailable.
         """
-        storage_dir = os.path.join(self.config_store, "persistence")
+        storage_dir = os.path.join(self.get_config_store_path(), "persistence")
 
         if not os.path.exists(storage_dir):
             os.makedirs(storage_dir)
@@ -1480,6 +1423,7 @@ class Backend(_backend.Backend):
         In case the daemon's persistence storage is unavailable, use flat files
         stored on the filesystem.
         """
+        zone = zone.zone_id
         storage_dir = self._get_persistence_storage_fallback_path()
         key_name_suffix = "{0}_{1}".format(rdevice.serial, zone)
 
@@ -1521,68 +1465,6 @@ class Backend(_backend.Backend):
         file_path = os.path.join(storage_dir, key_name_suffix)
         with open(file_path, "w") as f:
             f.write(str(value))
-
-    def get_device_object(self, uid):
-        """
-        See _backend.get_device_object()
-        """
-        try:
-            success = self._reinit_device_manager()
-            if success != True:
-                return success
-            rdevice = self.devman.devices[uid]
-        except IndexError:
-            return None
-        except Exception as e:
-            return self.common.get_exception_as_string(e)
-
-        if not rdevice.has("lighting_led_matrix"):
-            return "Device does not support 'lighting_led_matrix'"
-
-        class OpenRazerCustomFX(fx.FX):
-            def __init__(self, rows, cols, name, backend, form_factor, serial, rdevice):
-                """
-                Parameter 'rdevice' holds the OpenRazer daemon's device object.
-                """
-                super().__init__(rows, cols, name, backend, form_factor, serial)
-                self._rdevice = rdevice
-
-            def set(self, x, y, red, green, blue):
-                self._rdevice.fx.advanced.matrix[y, x] = (red, green, blue)
-
-            def draw(self):
-                self._rdevice.fx.advanced.draw()
-
-            def clear(self):
-                self._rdevice.fx.advanced.matrix.reset()
-
-            def brightness(self, percent):
-                self._rdevice.brightness = percent
-
-        class DeathStalkerChromaFX(OpenRazerCustomFX):
-            """
-            This device has a matrix of 12x1, but every second LED (2,4,6,8,10,12)
-            actually blends with the previous LED (1,3,5,7,9,11) (#335)
-            """
-            def set(self, x, y, red, green, blue):
-                # Matrix is halfed. "Stretch" LEDs across two for one.
-                # 0-based: Even (normal), odd (blend)
-                # Example: [0] -> [0,1]  [5] -> [10,11]
-                self._rdevice.fx.advanced.matrix[y, (x * 2)] = (red, green, blue)
-                self._rdevice.fx.advanced.matrix[y, (x * 2) + 1] = (red, green, blue)
-
-        # Overrides for quirky devices
-        if rdevice.name == "Razer DeathStalker Chroma" and rdevice.fx.advanced.cols == 12:
-            # OpenRazer changed this matrix after 3.0.1 (6 => 12)
-            return DeathStalkerChromaFX(1, 6, str(rdevice.name), self.backend_id, self._get_form_factor(rdevice)["id"], str(rdevice.serial), rdevice)
-
-        return OpenRazerCustomFX(int(rdevice.fx.advanced.rows),
-                                 int(rdevice.fx.advanced.cols),
-                                 str(rdevice.name),
-                                 self.backend_id,
-                                 self._get_form_factor(rdevice)["id"],
-                                 str(rdevice.serial),
-                                 rdevice)
 
     def restart(self):
         """

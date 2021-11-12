@@ -168,12 +168,6 @@ class ApplicationData(object):
                 def _enable_action(action, enabled=True):
                     self.main_window.findChild(QAction, action).setEnabled(enabled)
 
-                self.dbg.stdout("Initialising troubleshooters...", dbg.action, 1)
-                self.middleman.init_troubleshooters()
-
-                if "openrazer" in self.middleman.troubleshooters:
-                    _enable_action("actionTroubleshootOpenRazer")
-
                 # Misbehaving backends may take ages inside init()
                 self.dbg.stdout("Initialising backends...", dbg.action, 1)
                 self.middleman.init()
@@ -186,6 +180,9 @@ class ApplicationData(object):
                     _enable_action("actionOpenRazerOpenLog")
                     _enable_action("actionOpenRazerRestartDaemon")
                     _enable_action("actionOpenRazerAbout")
+
+                if "openrazer" in self.middleman.troubleshooters:
+                    _enable_action("actionTroubleshootOpenRazer")
 
                 if "openrazer" in self.middleman.import_errors.keys():
                     _enable_action("actionOpenRazerAbout", False)
