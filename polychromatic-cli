@@ -601,7 +601,7 @@ def _get_parameter_object(option, param_id):
 def _apply_option(device, option, parameter, colours):
     try:
         option.colours = colours
-        option.apply(parameter.data)
+        option.apply(parameter)
     except Exception as e:
         print_device_error(device, zone, _("Failed to set option"), option.uid)
         dbg.stdout(common.get_exception_as_string(e), dbg.error)
@@ -672,28 +672,28 @@ def _apply_device_options(device, zone_id):
                 dbg.stdout(_("Required colours:") + " " + str(param.colours_required), dbg.warning)
                 return False
 
-        return _apply_option(device, option, param, apply_colours)
+        return _apply_option(device, option, param.data, apply_colours)
 
     # Validate parameters for other types of options
     if isinstance(option, Backend.ToggleOption):
         if not apply_param:
             print_device_error(device, zone, _("Missing --parameter (-p) for option"), apply_option)
-            dbg.stdout(_("Available parameters:") + "0, off, 1, on", dbg.warning)
+            dbg.stdout(_("Available parameters:") + " 0, off, 1, on", dbg.warning)
             return False
 
         if apply_param in ["on", "1"]:
-            return _apply_option(device, option, 1, apply_colours)
+            return _apply_option(device, option, True, apply_colours)
         elif apply_param in ["off", "0"]:
-            return _apply_option(device, option, 0, apply_colours)
+            return _apply_option(device, option, False, apply_colours)
 
         print_device_error(device, zone, _("Invalid parameter"), apply_param)
-        dbg.stdout(_("Available parameters:") + "0, off, 1, on", dbg.warning)
+        dbg.stdout(_("Available parameters:") + " 0, off, 1, on", dbg.warning)
         return False
 
     elif isinstance(option, Backend.SliderOption):
         if not apply_param:
             print_device_error(device, zone, _("Missing --parameter (-p) for option"), apply_option)
-            dbg.stdout(_("Available parameters:") + "{0} - {1}".format(str(option.min), str(option.max)), dbg.warning)
+            dbg.stdout(_("Available parameters:") + " {0} - {1}".format(str(option.min), str(option.max)), dbg.warning)
             return False
 
         return _apply_option(device, option, int(apply_param), apply_colours)

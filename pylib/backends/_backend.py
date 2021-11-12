@@ -340,9 +340,9 @@ class Backend(object):
             """
             return
 
-        def apply(self, param_id=None):
+        def apply(self, data=None):
             """
-            Send the option (and parameter data) to the device.
+            Execute the action on the device. The "data" argument varies by option type.
             """
             raise NotImplementedError
 
@@ -354,7 +354,7 @@ class Backend(object):
             This Parameter() object is passed to an option's apply() function.
             """
             def __init__(self):
-                # Can be any data type, an internal value to use later.
+                # Can be any data type, this will be passed as an argument to Option.apply()
                 self.data = None
 
                 # Human readable text describing this option, e.g. "Fast"
@@ -409,6 +409,12 @@ class Backend(object):
             self.icon_enable = ""
             self.icon_disable = ""
 
+        def apply(self, enabled=True):
+            """
+            Execute the action on the device. This argument will be a boolean.
+            """
+            raise NotImplementedError
+
     class SliderOption(Option):
         """
         For an option that is a variable between two integers.
@@ -426,6 +432,12 @@ class Backend(object):
             self.step = 1
             self.suffix = ""
             self.suffix_plural = ""
+
+        def apply(self, value=0):
+            """
+            Execute the action on the device. This argument will be an integer.
+            """
+            raise NotImplementedError
 
     class MultipleChoiceOption(Option):
         """

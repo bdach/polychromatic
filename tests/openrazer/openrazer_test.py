@@ -80,8 +80,12 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
 
     def test_client_override(self):
         # Perform what the GUI would do
-        client_path = os.path.expanduser("~/.config/polychromatic/backends/openrazer/ripple_refresh_rate")
-        with open(client_path, "w") as f:
+        client_dir = os.path.expanduser("~/.config/polychromatic/backends/openrazer/")
+        client_file = "ripple_refresh_rate"
+        if not os.path.exists(client_dir):
+            os.makedirs(client_dir)
+
+        with open(os.path.join(client_dir, client_file), "w") as f:
             f.write("1")
 
         # Does it load correctly?
@@ -121,15 +125,13 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
         # In <openrazer>/daemon/openrazer_daemon/hardware/mouse.py:
         # AVAILABLE_DPI = [450, 900, 1800, 3500]
         device = self.get_device("Razer DeathAdder 3.5G")
-        for option in device.zones[0].options:
-            if option.uid == "fixed_dpi":
-                fixed_dpi = option
+        option = self.get_option(device, "fixed_dpi", "main")
 
-        if not fixed_dpi:
+        if not option:
             raise RuntimeError("Expected a FixedDPIOption object")
 
-        fixed_dpi.apply(900)
-        fixed_dpi.refresh()
+        option.apply(900)
+        option.refresh()
 
         # The second parameter should now be selected
         self.assertTrue(option.parameters[1].active, "Failed to set or get for a fixed DPI X device")
@@ -304,7 +306,7 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
     def test_option_effect_wave(self):
         device = self.get_device("Razer Blade (Late 2016)")
         effect = self.get_option(device, "wave", "main")
-        effect.apply(effect.parameters[0])
+        effect.apply(effect.parameters[0].data)
 
     def test_option_effect_wave_label_mouse(self):
         device = self.get_device("Razer Mamba (Wireless)")
@@ -319,12 +321,12 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
     def test_option_effect_ripple(self):
         device = self.get_device("Razer BlackWidow Chroma")
         effect = self.get_option(device, "ripple", "main")
-        effect.apply(effect.parameters[0])
+        effect.apply(effect.parameters[0].data)
 
     def test_option_effect_reactive(self):
         device = self.get_device("Razer BlackWidow V3")
         effect = self.get_option(device, "reactive", "main")
-        effect.apply(effect.parameters[0])
+        effect.apply(effect.parameters[0].data)
 
     def test_option_effect_static(self):
         device = self.get_device("Razer BlackWidow Chroma")
@@ -334,18 +336,18 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
     def test_option_effect_breath(self):
         device = self.get_device("Razer BlackWidow 2019")
         effect = self.get_option(device, "breath", "main")
-        effect.apply(effect.parameters[0])
+        effect.apply(effect.parameters[0].data)
 
     def test_option_effect_breath_triple(self):
         device = self.get_device("Razer Kraken Ultimate")
         effect = self.get_option(device, "breath", "main")
         # Expects: [single, dual, triple]
-        effect.apply(effect.parameters[2])
+        effect.apply(effect.parameters[2].data)
 
     def test_option_effect_starlight(self):
         device = self.get_device("Razer BlackWidow X Ultimate")
         effect = self.get_option(device, "starlight", "main")
-        effect.apply(effect.parameters[-1])
+        effect.apply(effect.parameters[-1].data)
 
     def test_workaround_bw2013_pulsate(self):
         device = self.get_device("Razer Deathstalker Expert")
@@ -405,20 +407,19 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
                 for option in zone.options:
                     if isinstance(option, Backend.EffectOption):
                         if option.parameters:
-                            option.apply(random.choices(option.parameters))
+                            option.apply(random.choices(option.parameters)[0].data)
                         else:
                             option.apply()
                     elif isinstance(option, Backend.ToggleOption):
                         option.apply(False)
                         option.apply(True)
                     elif isinstance(option, Backend.SliderOption):
-                        option.apply(random.choices(range(option.min, option.max, option.step)))
+                        option.apply(random.choices(range(option.min, option.max, option.step))[0])
                     elif isinstance(option, Backend.MultipleChoiceOption):
-                        option.apply(random.choices(option.parameters))
+                        option.apply(random.choices(option.parameters)[0].data)
                     elif isinstance(option, Backend.ButtonOption):
                         option.apply()
                     option.refresh()
-
 
 
 if __name__ == '__main__':

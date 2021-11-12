@@ -667,7 +667,7 @@ class OpenRazerBackend(Backend):
                     self.value = int(round(self._rzone.brightness))
 
                 def apply(self, new_value):
-                    self._rzone.brightness = new_value
+                    self._rzone.brightness = float(new_value)
 
             slider = BrightnessSlider(rzone)
             slider.label = self._("Brightness")
@@ -686,8 +686,8 @@ class OpenRazerBackend(Backend):
                 def refresh(self):
                     self.active = True if self._rzone.active else False
 
-                def apply(self, new_state):
-                    self._rzone.active = new_state
+                def apply(self, enabled):
+                    self._rzone.active = enabled
 
             toggle = BrightnessToggle(rzone)
             toggle.label = self._("Brightness")
@@ -776,7 +776,7 @@ class OpenRazerBackend(Backend):
 
                 def apply(self, direction):
                     # direction is an int: 1 or 2
-                    self._rzone.wave(direction.data)
+                    self._rzone.wave(direction)
 
             option = WaveOption(rzone)
             option.label = self._("Wave")
@@ -833,7 +833,8 @@ class OpenRazerBackend(Backend):
                     if str(ripple_type) == "random":
                         self._rzone.ripple_random()
                     elif str(ripple_type) == "single":
-                        self._rzone.ripple()
+                        rgb = common.hex_to_rgb(self.colours[0])
+                        self._rzone.ripple(rgb[0], rgb[1], rgb[2])
 
             option = RippleOption(rzone, current_colours, self._convert_colour_bytes)
             option.label = self._("Ripple")
@@ -990,7 +991,7 @@ class OpenRazerBackend(Backend):
                                                   rgb[1][0], rgb[1][1], rgb[1][2],
                                                   rgb[2][0], rgb[2][1], rgb[2][2])
                     else:
-                        raise KeyError("Unknown breath type")
+                        raise KeyError("Unknown breath type: " + breath_type)
 
             option = BreathOption(rzone, current_colours, self._convert_colour_bytes)
             option.label = self._("Breath")
@@ -1055,8 +1056,8 @@ class OpenRazerBackend(Backend):
 
                 def apply(self, param):
                     # Param Example: "random:2" for a Medium (2) Random Starlight
-                    starlight_type = param.data.split(":")[0]
-                    starlight_speed = int(param.data.split(":")[1])
+                    starlight_type = param.split(":")[0]
+                    starlight_speed = int(param.split(":")[1])
 
                     rgb = []
                     for colour in self.colours:
@@ -1070,7 +1071,7 @@ class OpenRazerBackend(Backend):
                         self._rzone.starlight_dual(rgb[0][0], rgb[0][1], rgb[0][2],
                                                    rgb[1][0], rgb[1][1], rgb[1][2], starlight_speed)
                     else:
-                        raise KeyError("Unknown starlight type")
+                        raise KeyError("Unknown starlight parameter:" + str(param))
 
             option = StarlightOption(rzone, current_colours, self._convert_colour_bytes)
             option.label = self._("Starlight")
@@ -1256,8 +1257,8 @@ class OpenRazerBackend(Backend):
             def refresh(self):
                 self.active = True if rdevice.game_mode_led else False
 
-            def apply(self, state):
-                self._rdevice.game_mode_led = state
+            def apply(self, enabled):
+                self._rdevice.game_mode_led = enabled
 
         option = GameModeOption(rdevice)
         option.label =  self._("Game Mode")
