@@ -44,7 +44,8 @@ class OpenRazerBackend(Backend):
         self.devman = None
 
         # Client Settings
-        self.allow_image_download = True
+        # FIXME: Move image download to Controller only!
+        self.allow_image_download = False
         self.ripple_refresh_rate = 0.05
         self.load_client_overrides()
 
@@ -92,7 +93,6 @@ class OpenRazerBackend(Backend):
             except ValueError:
                 return default
 
-        self.allow_image_download = True if _get_override("allow_image_download", int, 1) == 1 else False
         self.ripple_refresh_rate = _get_override("ripple_refresh_rate", float, 0.05)
 
     def get_unsupported_devices(self):
@@ -507,7 +507,8 @@ class OpenRazerBackend(Backend):
         try:
             r = requests.get(image_url)
             if r.status_code == 200:
-                open(image_path, "wb").write(r.content)
+                with open(image_path, "wb") as f:
+                    f.write(r.content)
                 self.debug("Success!")
                 return image_path
 
