@@ -369,12 +369,6 @@ class PolychromaticTrayApplet():
             bulk_menu, bulk_menu_item = indicator.create_submenu(_("Apply to All"), True, self._get_icon("devices", "all"))
             print("fixme:bulk apply options")
 
-            # TODO: Placeholder, Presets not yet implemented
-            #print("stub:preset menu")
-            #presets_menu, presets_menu_item = indicator.create_submenu(_("Apply Preset"), False, self._get_icon("general", "presets"))
-            #indicator.create_menu_item(presets_menu, "Placeholder", False)
-            #indicator.add_menu_item(menu, presets_menu_item)
-
         # General Options
         indicator.create_seperator(menu)
         self._create_menu_item_if_controller_present(menu, _("Open Controller"), None, self._get_icon("general", "controller"))
@@ -427,7 +421,7 @@ class PolychromaticTrayApplet():
                 if option.colours_required > 0:
                     can_set_colours = True
 
-                if isinstance(option (Backend.EffectOption, Backend.MultipleChoiceOption)):
+                if isinstance(option, (Backend.EffectOption, Backend.MultipleChoiceOption)):
                     # Option does not accept parameters, just a button
                     if len(option.parameters) == 0:
                         indicator.create_menu_item(submenu, option.label, True, cb.apply_option, [option, None], option.icon)
@@ -446,7 +440,7 @@ class PolychromaticTrayApplet():
                     indicator.add_menu_item(submenu, self.create_toggle_menu(option))
 
                 elif isinstance(option, Backend.DialogOption):
-                    # TODO: Implement an actual dialog, not labels. It was too long, too messy.
+                    # TODO: Implement an actual dialog, not labels (which were too long, too messy)
                     print("fixme:Dialog option not implemented")
 
                 # Option is a clickable one-way action with no feedback
@@ -546,11 +540,12 @@ class PolychromaticTrayApplet():
 
         for no in range(max, min - step, 0 - step):
             # Brightness uses custom icons
+            icon = option.icon
             if option.uid == "brightness":
                 icon = self._get_icon("params", str(no))
 
             suffix = option.suffix if no == 1 else option.suffix_plural
-            indicator.create_menu_item(submenu, str(no) + suffix, True, cb.apply_option, [option, int(no)], option.icon)
+            indicator.create_menu_item(submenu, str(no) + suffix, True, cb.apply_option, [option, int(no)], icon)
 
         return submenu_item
 
@@ -647,9 +642,9 @@ class Callback():
         """
         device, hex_value = attr
 
-        dbg.stdout("Applying colour '{0}' to all zones for '{1}'".format(device.name, hex_value), dbg.action, 1)
+        dbg.stdout("Applying colour '{0}' to all zones in '{1}'".format(hex_value, device.name), dbg.action, 1)
         # TODO: Catch errors
-        middleman.set_device_colour(device, hex_value)
+        middleman.set_colour_for_active_effect_device(device, hex_value)
 
     @staticmethod
     def set_dpi(item, attr):
@@ -714,7 +709,7 @@ class Callback():
 
             # Apply colour to device
             dbg.stdout("Set custom colour for {0} to '{1}'".format(device["name"], hex_value), dbg.debug, 1)
-            r = middleman.set_device_colour(device, zone, hex_value)
+            r = middleman.set_colour_for_active_effect(device, zone, hex_value)
             _verbose_check_status(r)
 
         color_selection_dlg.destroy()

@@ -775,8 +775,8 @@ class OpenRazerBackend(Backend):
                         param.active = True if int(self._rzone.wave_dir) == param.data else False
 
                 def apply(self, direction):
-                    # direction is an int: 1 or 2
-                    self._rzone.wave(direction)
+                    # direction: 1 or 2
+                    self._rzone.wave(int(direction))
 
             option = WaveOption(rzone)
             option.label = self._("Wave")

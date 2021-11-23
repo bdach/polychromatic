@@ -4,12 +4,9 @@
 # Copyright (C) 2020-2021 Luke Horwell <code@horwell.me>
 #
 """
-This module collates data from installed backends for supported devices.
-Polychromatic's applications will process this data.
+Provides the "middle ground" between each backend and Polychromatic's interfaces.
 
-Each backend is stored in its own module adjacent to this file. These are
-written by inheriting the "Backend" class in _backend.py below and
-implemented accordingly.
+The code that provides each backend is stored in "backends" directory.
 
 Refer to the online documentation for more details:
 https://docs.polychromatic.app/
@@ -55,23 +52,25 @@ class Middleman(object):
         # List of Backend() modules that failed to init().
         self.bad_init = []
 
-        # List of backend IDs that are not present.
+        # List of backend string IDs that are not present.
         self.not_installed = []
 
-        # Dictionary of Backend IDs referencing troubleshoot() functions, if available.
+        # Dictionary of backend IDs referencing troubleshoot() functions, if available.
+        #   e.g. "openrazer": TROUBLESHOOT_MODULES.get("openrazer")
         self.troubleshooters = {}
 
         # Keys containing human readable strings for modules that failed to import.
+        #   e.g. "openrazer": "Exception: xyz"
         self.import_errors = {}
 
-        # Dictionary of Backend IDs referencing a list of DeviceItem() objects.
+        # List of DeviceItem() objects.
         self.device_cache = []
 
     def init(self):
         """
         Initialise the backend objects. This should be called when the user interface
-        is ready. Note that this thread may potentially block depending on how fast
-        the backends load.
+        is ready. Note that this thread may potentially be blocked if the backend
+        hangs while it initialises.
         """
         def _load_backend_module(backend_id):
             try:
@@ -125,7 +124,7 @@ class Middleman(object):
 
     def _reload_device_cache_if_empty(self):
         """
-        Reload the cache of DeviceItem()'s if it has not initalized yet.
+        Reload the cache of DeviceItem()'s if it hasn't been initalized yet.
         """
         if self.device_cache:
             return
@@ -171,7 +170,7 @@ class Middleman(object):
                 return device
         return None
 
-    def get_device_by_form_factor(self, form_factor_id):
+    def get_devices_by_form_factor(self, form_factor_id):
         """
         Returns a list of DeviceItem()'s based on the form factor specified, or empty list.
         """
@@ -199,6 +198,8 @@ class Middleman(object):
         Params:
             backend         (str)       ID of backend to check
             i18n            (obj)       _ function for translating strings
+            fn_progress_set_max         See _backend.Backend.troubleshoot()
+            fn_progress_advance         See _backend.Backend.troubleshoot()
 
         Returns:
             (list)          Results from the troubleshooter
@@ -222,198 +223,95 @@ class Middleman(object):
             if module.backend_id == backend:
                 return module.restart()
 
-    def _get_current_device_option(self, device, zone=None):
+    def get_active_effect(self, zone):
         """
-        Return the currently 'active' option, its parameter and colour(s), if applicable.
-        Usually this would be an effect.
-
-        Params:
-            device          (dict)      middleman.get_device() object
-            zone            (str)       (Optional) Get data for this specific zone.
-
-        Returns list:
-        [option_id, option_data, colour_hex]
+        Return the first active Backend.EffectOption from the specified zone.
         """
-        option_id = None
-        option_data = None
-        colour_hex = []
-        colour_count = 0
-        found_option = None
-        param = None
+        for option in zone.options:
+            if isinstance(option, Backend.EffectOption) and option.active:
+                return option
 
-        if zone:
-            zones = [zone]
-        else:
-            # Find an active effect in all zones, uses the last matched one.
-            zones = device["zone_options"].keys()
-
-        for zone in zones:
-            for option in device["zone_options"][zone]:
-                if not "active" in option.keys():
-                    continue
-
-                if not option["type"] == "effect":
-                    continue
-
-                if option["active"] == True:
-                    found_option = option
-                    option_id = option["id"]
-
-                    try:
-                        if len(option["parameters"]) == 0:
-                            break
-                        else:
-                            for param in option["parameters"]:
-                                if param["active"] == True:
-                                    option_data = param["data"]
-                                    colour_hex = param["colours"]
-                    except KeyError:
-                        # Toggle or slider do not have a 'parameters' key
-                        pass
-
-        if not found_option:
-            return [None, None, None]
-
-        if not param:
-            colour_hex = found_option["colours"]
-
-        return [option_id, option_data, colour_hex]
-
-    def replay_active_effect(self, backend, uid, zone):
+    def _apply_option_with_same_params(self, option):
         """
-        Replays the 'active' effect. This may be used, for example, to restore
-        the effect that was being played before the matrix was tested or being
-        previewed in the editor.
+        Re-apply the specified Backend.Option() instance, using the same
+        parameters and colours.
         """
-        print("fixme:replay_active_effect")
-        return
-        device = self.get_device(backend, uid)
-        serial = device["serial"]
-        state = procpid.DeviceSoftwareState(serial)
+        if option.parameters:
+            param_data = option.parameters[0].data
+            for param in option.parameters:
+                if param.active:
+                    param_data = param.data
+            option.apply(param_data)
 
-        # Device was playing a software effect, resume that.
+        elif isinstance(option, Backend.ToggleOption):
+            option.apply(option.active)
+
+        elif isinstance(option, Backend.SliderOption):
+            option.apply(option.value)
+
+        elif isinstance(option, (Backend.EffectOption, Backend.MultipleChoiceOption)):
+            option.apply()
+
+    def replay_active_effect(self, device):
+        """
+        Re-applies the 'active' effect for all zones on the device.
+
+        For example, this may be used to restore previously played effect prior to
+        opening the effect editor which was physically previewing on the hardware.
+        """
+        # Was the device playing a software effect?
+        state = procpid.DeviceSoftwareState(device.serial)
         effect = state.get_effect()
         if effect:
             procmgr = procpid.ProcessManager("helper")
-            procmgr.start_component(["--run-fx", effect["path"], "--device-serial", serial])
+            procmgr.start_component(["--run-fx", effect["path"], "--device-serial", device.serial])
             return
 
-        # Device was set to a hardware effect, apply that.
-        option_id, option_data, colour_hex = self._get_current_device_option(device, zone)
-        if option_id:
-            return self.set_device_state(backend, uid, device["serial"], zone, option_id, option_data, colour_hex)
+        # Was the device running a hardware effect?
+        for zone in device.zones:
+            option = self.get_active_effect(zone)
+            if option:
+                option.refresh()
+                if option.active:
+                    self._apply_option_with_same_params(option)
 
-    def set_device_colour(self, device, zone, hex_value, colour_pos=0):
+    def set_colour_for_option(self, option, hex_value, colour_pos=0):
         """
-        Re-apply the currently selected options with a new primary colour.
-
-        The return code is the same as set_device_state()
-        """
-        print("fixme:set_device_colour")
-        return
-
-        option_id, option_data, colour_hex = self._get_current_device_option(device, zone)
-        if not colour_hex:
-            return False
-        colour_hex[colour_pos] = hex_value
-        return self.set_device_state(device["backend"], device["uid"], device["serial"], zone, option_id, option_data, colour_hex)
-
-    def set_bulk_option(self, option_id, option_data, colours_needed):
-        """
-        The "Apply to All" function that will set all of the devices to the specified
-        effect (option ID and option parameter), such as "breath" and "single", or
-        "static" and None.
-
-        The colour for the device will be re-used from a previous selection.
+        Set a new colour for the specified option.
 
         Params:
-            option_id           (str)
-            option_data         (str)
-            colours_needed      (int)
-
-        Parameters may be determined by the common.get_bulk_apply_options() function.
-
-        Return is null.
+            option      (obj)   Backend.Option() inherited object
+            hex_value   (str)   New #RRGGBB string
+            colour_pos  (int)   (Optional) Position to append. 0 = Primary, 1 = Secondary, etc
         """
-        self._dbg.stdout("Setting all devices to '{0}' (parameter: {1})".format(option_id, option_data), self._dbg.action, 1)
+        option.refresh()
+        option.colours[colour_pos] = hex_value
+        self._apply_option_with_same_params(option)
 
-        devices = self.get_device_all()
-        for device in devices:
-            name = device["name"]
-            backend = device["backend"]
-            uid = device["uid"]
-            serial = device["serial"]
-            colour_hex = []
-
-            for zone in device["zone_options"].keys():
-                # Skip if the device's zone/options doesn't support this request
-                skip = True
-                for option in device["zone_options"][zone]:
-                    if option["id"] == option_id:
-                        skip = False
-                        colour_hex = option["colours"]
-                        break
-
-                if skip:
-                    continue
-
-                # TODO: Use default colours
-                while len(colour_hex) < colours_needed:
-                    colour_hex.append("#00FF00")
-
-                self._dbg.stdout("- {0} [{1}]".format(name, zone), self._dbg.action, 1)
-                result = self.set_device_state(backend, uid, serial, zone, option_id, option_data, colour_hex)
-                if result == True:
-                    self._dbg.stdout("Request OK", self._dbg.success, 1)
-                elif result == False:
-                    self._dbg.stdout("Bad request!", self._dbg.error, 1)
-                else:
-                    self._dbg.stdout("Error: " + str(result), self._dbg.error, 1)
-
-    def set_bulk_colour(self, new_colour_hex):
+    def set_colour_for_active_effect_zone(self, zone, hex_value, colour_pos=0):
         """
-        The "Apply to All" function that will set all of the devices to the specified
-        primary colour. Some devices may not be playing an effect that uses a colour
-        (e.g. wave, spectrum) and as such, this will cause no effect.
+        Set a new colour for the effect that's active in the specified zone.
 
         Params:
-            new_colour_hex      (str)
-
-        Return is null.
+            zone        (obj)   Backend.DeviceItem.Zone() object
+            hex_value   (str)   New #RRGGBB string
+            colour_pos  (int)   (Optional) Position to append. 0 = Primary, 1 = Secondary, etc
         """
-        self._dbg.stdout("Setting all primary colours to {0}".format(new_colour_hex), self._dbg.action, 1)
+        option = self.get_active_effect(zone)
+        if option:
+            return self.set_colour_for_option(option)
 
-        devices = self.get_device_all()
-        for device in devices:
-            option_id, option_data, colour_hex = self._get_current_device_option(device)
-            name = device["name"]
-            backend = device["backend"]
-            uid = device["uid"]
-            serial = device["serial"]
+    def set_colour_for_active_effect_device(self, device, hex_value, colour_pos=0):
+        """
+        Set a new colour for all the device's active effects.
 
-            # Skip devices that do not support this option
-            if not option_id:
-                continue
+        Params:
+            device      (obj)   Backend.DeviceItem() object
+            hex_value   (str)   New #RRGGBB string
+            colour_pos  (int)   (Optional) Position to append. 0 = Primary, 1 = Secondary, etc
+        """
+        for zone in device.zones:
+            option = self.get_active_effect(zone)
+            if option:
+                self.set_colour_for_option(option)
 
-            for zone in device["zone_options"].keys():
-                # Skip if the device's zone/options doesn't support this request
-                skip = True
-                for option in device["zone_options"][zone]:
-                    if option["id"] == option_id:
-                        skip = False
-                        break
-
-                    if not option["colours"]:
-                        continue
-
-                if skip:
-                    continue
-
-                self._dbg.stdout("- {0} [{1}]".format(name, zone), self._dbg.action, 1)
-                result = self.set_device_colour(device, zone, new_colour_hex)
-                if result == True:
-                    self._dbg.stdout("Request OK", self._dbg.success, 1)
-                elif result == False:
-                    self._dbg.stdout("Bad request!", self._dbg.error, 1)
-                else:
-                    self._dbg.stdout("Error: " + str(result), self._dbg.error, 1)

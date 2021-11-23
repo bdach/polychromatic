@@ -334,7 +334,7 @@ elif args.serial:
         exit(1)
 
 elif args.device:
-    device_list = middleman.get_device_by_form_factor(args.device)
+    device_list = middleman.get_devices_by_form_factor(args.device)
     if not device_list:
         dbg.stdout("{0} {1}".format(_("No devices found that match this form factor:"), args.device), dbg.error)
         dbg.stdout("{0} {1}".format(_("Avaliable form factors:"), ", ".join(common.FORM_FACTORS)), dbg.error)

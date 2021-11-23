@@ -6,10 +6,10 @@
 """
 Contains the parent "Backend" class that is inherited by all backend modules.
 
-A "backend" implements a data layer of processing between a Polychromatic interface
-and the vendor's driver, daemon or other software. This application acts like
-an orchestrator for presenting and relaying instructions, but does not actually
-send binary or payloads to the hardware itself.
+A "backend" implements a data layer of processing between Polychromatic's interfaces
+and the vendor's driver, daemon or other implementation. This application acts like
+an orchestrator for presenting and relaying instructions, but is not expected to
+actually send binary or payloads to the hardware itself.
 
 Refer to the online documentation for more details:
 https://docs.polychromatic.app/
