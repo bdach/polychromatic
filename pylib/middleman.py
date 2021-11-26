@@ -299,7 +299,7 @@ class Middleman(object):
         """
         option = self.get_active_effect(zone)
         if option:
-            return self.set_colour_for_option(option)
+            return self.set_colour_for_option(option, hex_value, colour_pos)
 
     def set_colour_for_active_effect_device(self, device, hex_value, colour_pos=0):
         """
@@ -313,5 +313,5 @@ class Middleman(object):
         for zone in device.zones:
             option = self.get_active_effect(zone)
             if option:
-                self.set_colour_for_option(option)
+                self.set_colour_for_option(option, hex_value, colour_pos)
 

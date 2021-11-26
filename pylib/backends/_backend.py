@@ -186,7 +186,7 @@ class Backend(object):
             # Stores a Matrix() object, if device supports per-LED lighting.
             self.matrix = None
 
-            # A list of Zone() objects.
+            # List of Zone() objects.
             self.zones = []
 
         def __str__(self):
@@ -384,8 +384,8 @@ class Backend(object):
         For presenting hardware effects. These are grouped together
         under one section/menu. There are no additional variables to set.
 
-        Parameters: Optional (*)
-        Colours: Optional (*)
+        Parameters: Optional
+        Colours: Optional
         """
         def __init__(self):
             super().__init__()
@@ -444,7 +444,7 @@ class Backend(object):
         For an option that should be presented as a drop down or list.
         There are no variables to set. These are populated from parameters.
 
-        Parameters: Required (!)
+        Parameters: Required
         Colours: Ignored
         """
 

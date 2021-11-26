@@ -662,6 +662,7 @@ class OpenRazerBackend(Backend):
                     self.max = 100
                     self.step = 5
                     self.suffix = "%"
+                    self.suffix_plural = "%"
 
                 def refresh(self):
                     self.value = int(round(self._rzone.brightness))

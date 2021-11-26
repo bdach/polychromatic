@@ -424,7 +424,7 @@ class PolychromaticTrayApplet():
                 if isinstance(option, (Backend.EffectOption, Backend.MultipleChoiceOption)):
                     # Option does not accept parameters, just a button
                     if len(option.parameters) == 0:
-                        indicator.create_menu_item(submenu, option.label, True, cb.apply_option, [option, None], option.icon)
+                        indicator.create_menu_item(submenu, option.label, True, cb.apply_option, [option, None, 0], option.icon)
                     else:
                         # Create a submenu for effects
                         indicator.add_menu_item(submenu, self.create_parameters_menu(option))
@@ -445,7 +445,7 @@ class PolychromaticTrayApplet():
 
                 # Option is a clickable one-way action with no feedback
                 elif isinstance(type, Backend.ButtonOption):
-                    indicator.create_menu_item(submenu, option.button_label, True, cb.apply_option, [option, None], option.icon)
+                    indicator.create_menu_item(submenu, option.button_label, True, cb.apply_option, [option, None, 0], option.icon)
 
             # Seperator multiple zones if applicable
             if multiple_zones:
@@ -460,13 +460,13 @@ class PolychromaticTrayApplet():
                 for i in range(1, 6):
                     dpi_stages.append(prefs["custom"]["dpi_stage_" + str(i)])
 
-            for item, dpi in enumerate(dpi_stages):
+            for item, value in enumerate(dpi_stages):
                 icon = None
                 if item == 0:
                     icon = self._get_icon("general", "dpi-slow")
                 elif item == len(dpi_stages) - 1:
                     icon = self._get_icon("general", "dpi-fast")
-                indicator.create_menu_item(dpi_menu, str(dpi), True, cb.set_dpi, [dpi], icon)
+                indicator.create_menu_item(dpi_menu, str(value), True, cb.set_dpi, [device.dpi, value], icon)
             indicator.add_menu_item(submenu, dpi_menu_item)
 
         if device.matrix:
@@ -518,7 +518,7 @@ class PolychromaticTrayApplet():
         submenu, submenu_item = indicator.create_submenu(option.label, True, option.icon)
 
         for param in option.parameters:
-            indicator.create_menu_item(submenu, param.label, True, cb.apply_option, [option, param], param.icon)
+            indicator.create_menu_item(submenu, param.label, True, cb.apply_option, [option, param.data, param.colours_required], param.icon)
 
         return submenu_item
 
@@ -545,7 +545,7 @@ class PolychromaticTrayApplet():
                 icon = self._get_icon("params", str(no))
 
             suffix = option.suffix if no == 1 else option.suffix_plural
-            indicator.create_menu_item(submenu, str(no) + suffix, True, cb.apply_option, [option, int(no)], icon)
+            indicator.create_menu_item(submenu, str(no) + suffix, True, cb.apply_option, [option, int(no), 0], icon)
 
         return submenu_item
 
@@ -558,8 +558,8 @@ class PolychromaticTrayApplet():
         # Some IDs have submenu icons
         label_enable = option.label_enable if option.label_enable else _("On")
         label_disable = option.label_disable if option.label_disable else _("Off")
-        indicator.create_menu_item(submenu, label_enable, True, cb.apply_option, [option, True], option.icon_enable)
-        indicator.create_menu_item(submenu, label_disable, True, cb.apply_option, [option, False], option.icon_disable)
+        indicator.create_menu_item(submenu, label_enable, True, cb.apply_option, [option, True, 0], option.icon_enable)
+        indicator.create_menu_item(submenu, label_disable, True, cb.apply_option, [option, False, 0], option.icon_disable)
 
         return submenu_item
 
@@ -626,11 +626,17 @@ class Callback():
         Params:
             attr        [<Backend.Option object>, <Backend.Option.Parameter or None>]
         """
-        option, parameter = attr
+        option, param_data, param_colours = attr
 
-        dbg.stdout("Setting option '{0}' (data: {1})'".format(str(option), str(parameter)), dbg.action, 1)
+        # If the user set a primary colour in this session, use that.
+        global primary_colour
+        if primary_colour:
+            if option.colours_required > 0 or param_colours > 0:
+                option.colours[0] = primary_colour
+
+        dbg.stdout("Setting option '{0}' (data: {1})'".format(str(option), str(param_data)), dbg.action, 1)
         # TODO: Catch errors
-        option.apply(parameter)
+        option.apply(param_data)
 
     @staticmethod
     def set_colour_primary(item, attr):
@@ -641,6 +647,10 @@ class Callback():
             attr    [device, hex_string]
         """
         device, hex_value = attr
+
+        # Remember this colour if the user chooses another colour-enabled effect later
+        global primary_colour
+        primary_colour = hex_value
 
         dbg.stdout("Applying colour '{0}' to all zones in '{1}'".format(hex_value, device.name), dbg.action, 1)
         # TODO: Catch errors
@@ -656,7 +666,7 @@ class Callback():
         """
         dpi, value = attr
 
-        dbg.stdout("Setting DPI to {1}".format(value), dbg.action, 1)
+        dbg.stdout("Setting DPI to {0}".format(value), dbg.action, 1)
         # TODO: Catch errors
         dpi.set(int(value), int(value))
 
@@ -842,6 +852,7 @@ if __name__ == "__main__":
     saved_colours = pref.get_colour_list(_)
     colours_mono = common.get_green_shades(_)
     fileman_effects = effects.EffectFileManagement(i18n, _, dbg)
+    primary_colour = None
 
     # Initialise the indicator
     cb = Callback()
