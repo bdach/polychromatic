@@ -103,7 +103,6 @@ class ApplicationData(object):
         # Assigned in load() later
         self.middleman = None
         self.ready = False
-        self.device_list = []
         self.menubar = None
         self.tab_devices = None
         self.tab_effects = None
@@ -171,7 +170,6 @@ class ApplicationData(object):
                 # Misbehaving backends may take ages inside init()
                 self.dbg.stdout("Initialising backends...", dbg.action, 1)
                 self.middleman.init()
-                self.device_list = self.middleman.get_device_list()
 
                 # Enable OpenRazer functions if available
                 # See also: pylib.controller.preferences.refresh_backend_status()

@@ -33,6 +33,7 @@ class OpenRazerBackend(Backend):
     def __init__(self, *args):
         super().__init__(*args)
         self.backend_id = "openrazer"
+        self.name = "OpenRazer"
         self.logo = "openrazer.svg"
         self.version = rclient.__version__
         self.project_url = "https://openrazer.github.io"
@@ -123,6 +124,7 @@ class OpenRazerBackend(Backend):
 
             device = Backend.UnknownDeviceItem()
             device.name = "{0}:{1}".format("1532", pid)
+            device.backend_id = self.backend_id
             unreg_pids.append(device)
 
         return unreg_pids
@@ -177,6 +179,7 @@ class OpenRazerBackend(Backend):
         device = Backend.DeviceItem()
         device._rdevice = rdevice
         device.name = str(rdevice.name)
+        device.backend_id = self.backend_id
         device.form_factor = self._get_form_factor(rdevice)
         device.real_image = self._get_device_image(rdevice)
         device.serial = serial
@@ -291,11 +294,12 @@ class OpenRazerBackend(Backend):
         current_dpi = int(rdevice.dpi[0])
         parameters = []
 
-        for dpi in list(rdevice.available_dpi):
+        for index, dpi in enumerate(list(rdevice.available_dpi)):
             param = Backend.Option.Parameter()
             param.data = int(dpi)
             param.label = "{0} Hz".format(dpi)
             param.active = True if dpi == current_dpi else False
+            param.default = True if index == 0 else False
             parameters.append(param)
 
         class FixedDPIOption(Backend.MultipleChoiceOption):
@@ -788,6 +792,7 @@ class OpenRazerBackend(Backend):
 
             direction_2 = Backend.Option.Parameter()
             direction_2.data = 2
+            direction_2.default = True
 
             # Change parameter labels depending on orientation/device
             if rdevice.type == "mouse":
@@ -854,6 +859,7 @@ class OpenRazerBackend(Backend):
                 single.label = self._("Single")
                 single.icon = self.get_icon("params", "single")
                 single.colours_required = 1
+                single.default = True
                 option.parameters.append(single)
 
             options.append(option)
@@ -891,6 +897,7 @@ class OpenRazerBackend(Backend):
             medium = Backend.Option.Parameter()
             medium.data = 2
             medium.label = self._("Medium (1s)")
+            medium.default = True
 
             slow = Backend.Option.Parameter()
             slow.data = 3
@@ -1011,6 +1018,7 @@ class OpenRazerBackend(Backend):
                 single.label = self._("Single")
                 single.icon = self.get_icon("params", "single")
                 single.colours_required = 1
+                single.default = True
                 option.parameters.append(single)
 
             if has_breath_dual:
@@ -1099,6 +1107,7 @@ class OpenRazerBackend(Backend):
                     single.label = "{0} ({1})".format(self._("Single"), speeds[speed])
                     single.icon = self.get_icon("params", "single")
                     single.colours_required = 1
+                    single.default = True
                     option.parameters.append(single)
 
             if has_starlight_dual:

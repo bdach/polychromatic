@@ -33,6 +33,9 @@ class Backend(object):
         # (Also to be added in ../middleman.py)
         self.backend_id = "unknown"
 
+        # Name of backend
+        self.name = "OpenRazer"
+
         # Filename of the logo stored in data/img/logo/ (SVG preferred)
         self.logo = "example.svg"
 
@@ -128,11 +131,13 @@ class Backend(object):
         """
         def __init__(self):
             # Human readable name of the device (if known)
-            # Otherwise, use "VID:PID"
-            self.name = "Unknown Device"
+            self.name = "Unknown"
 
-            # Optional, if device type is known. Default is "unrecognised".
+            # Specify the backend ID here
+            self.backend_id = "openrazer"
+
             # Use Backend.get_form_factor(), passing an ID from common.FORM_FACTORS
+            # that identifies this device. Pass "unrecognised" to function if unknown.
             self.form_factor = {}
 
     def get_unsupported_devices(self):
@@ -154,6 +159,9 @@ class Backend(object):
         def __init__(self):
             # Human readable name of the device (including vendor name)
             self.name = "Unnamed Device"
+
+            # Backend ID
+            self.backend_id = ""
 
             # Use Backend.get_form_factor(), passing an ID from common.FORM_FACTORS
             self.form_factor = {}
@@ -366,6 +374,10 @@ class Backend(object):
                 # Is this parameter currently selected?
                 self.active = False
 
+                # Select this parameter as a fallback?
+                # (Only one should be default. If there's no default, use the first one)
+                self.default = False
+
                 # Does selecting this parameter require a colour?
                 # (Make sure the option's colour_list is populated)
                 self.colours_required = 0
@@ -447,6 +459,8 @@ class Backend(object):
         Parameters: Required
         Colours: Ignored
         """
+        def __init__(self):
+            super().__init__()
 
     class DialogOption(Option):
         """

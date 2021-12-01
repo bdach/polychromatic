@@ -228,8 +228,45 @@ class Middleman(object):
         Return the first active Backend.EffectOption from the specified zone.
         """
         for option in zone.options:
+            option.refresh()
             if isinstance(option, Backend.EffectOption) and option.active:
                 return option
+
+    def get_active_parameter(self, option):
+        """
+        Return the active Backend.Option.Parameter from the specified option.
+        """
+        option.refresh()
+        for param in option.parameters:
+            if param.active:
+                return param
+
+    def get_active_colours_required(self, option):
+        """
+        Return the number of colours required for the specified option.
+        When parameters are present, there may be a different number of colours.
+        """
+        option.refresh()
+        param = self.get_active_parameter(option)
+        if param:
+            return param.colours_required
+        return option.colours_required
+
+    def get_default_parameter(self, option):
+        """
+        Return the default Backend.Option.Parameter() object for an option.
+
+        There should only be one default, so the first one will be returned.
+        If there are no defaults, the first parameter will be returned.
+        """
+        if not option.parameters:
+            return None
+
+        for param in option.parameters:
+            if param.default:
+                return param
+
+        return option.parameters[0]
 
     def _apply_option_with_same_params(self, option):
         """
