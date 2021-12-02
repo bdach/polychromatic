@@ -228,7 +228,6 @@ class Middleman(object):
         Return the first active Backend.EffectOption from the specified zone.
         """
         for option in zone.options:
-            option.refresh()
             if isinstance(option, Backend.EffectOption) and option.active:
                 return option
 
@@ -236,7 +235,6 @@ class Middleman(object):
         """
         Return the active Backend.Option.Parameter from the specified option.
         """
-        option.refresh()
         for param in option.parameters:
             if param.active:
                 return param
@@ -246,7 +244,6 @@ class Middleman(object):
         Return the number of colours required for the specified option.
         When parameters are present, there may be a different number of colours.
         """
-        option.refresh()
         param = self.get_active_parameter(option)
         if param:
             return param.colours_required

@@ -207,59 +207,64 @@ class DevicesTab(shared.TabData):
         summary = self.widgets.create_summary_widget(real_image, device.name, indicators, buttons)
         layout.addWidget(summary)
 
-        def _get_effect_options(zone, ignore_state):
-            options = []
-            for option in zone.options:
-                option.refresh()
-
-                # Override active flag when software effect is running.
-                if ignore_state:
-                    option.active = False
-
-                if isinstance(option, Backend.EffectOption):
-                    options.append(option)
-
-            return options
-
         for zone in device.zones:
             widgets = []
             first_zone = True if device.zones[0] == zone else False
 
-            # Populate options, but 'squash' all effects into one row.
-            effects_populated = False
+            # Effects are all 'collapsed' into one row. When encountering the first
+            # effect, remember the index to insert here later.
+            has_effects = False
+            effects_index = 0
 
-            for option in zone.options:
-                # When encountering the first effect option, process all effect options now.
+            for index, option in enumerate(zone.options):
+                option.refresh()
+
                 if isinstance(option, Backend.EffectOption):
-                    if effects_populated:
-                        continue
-
-                    active_effect = self.middleman.get_active_effect(zone)
-                    effect_options = _get_effect_options(zone, state_effect)
-
-                    effect_row = self._create_effect_controls(zone, effect_options)
-                    if effect_row:
-                        widgets.append(effect_row)
-
-                    param_row = self._create_effect_parameter_controls(device, zone, active_effect)
-                    if param_row:
-                        widgets.append(param_row)
+                    if not has_effects:
+                        has_effects = True
+                        effects_index = index
                     continue
 
-                option.refresh()
                 widgets.append(self._create_row_control(option))
 
-            # Get colours for the active effects/parameters
-            colours_required = self.middleman.get_active_colours_required(option)
-            if colours_required:
-                option = self.middleman.get_active_effect(device)
-                colours = option.colours
+            # Controls for effects, its parameters and colours
+            def _get_effect_options(zone, ignore_state):
+                options = []
+                for option in zone.options:
+                    option.refresh()
 
-                for pos in range(0, colours_required):
-                    widgets.append(self._create_colour_control(device, zone, pos, colours))
+                    # Override active flag when software effect is running.
+                    if ignore_state:
+                        option.active = False
 
-            # Print these under the first zone
+                    if isinstance(option, Backend.EffectOption):
+                        options.append(option)
+
+                return options
+
+            effect_options = _get_effect_options(zone, state_effect)
+            active_effect = self.middleman.get_active_effect(zone)
+            effect_row = self._create_effect_controls(zone, effect_options)
+            if effect_row:
+                widgets.insert(effects_index, effect_row)
+                effects_index += 1
+
+            # Show parameters and colours for selected effect (if applicable)
+            if active_effect:
+                param_row = self._create_effect_parameter_controls(device, zone, active_effect)
+                if param_row:
+                    widgets.insert(effects_index, param_row)
+                    effects_index += 1
+
+                colours_required = self.middleman.get_active_colours_required(active_effect)
+                if colours_required > 0:
+                    for pos in range(0, colours_required):
+                        widgets.insert(effects_index, self._create_colour_control(device, zone, pos, active_effect.colours))
+                        effects_index += 1
+
+            # General device controls
             if first_zone:
+                # -- Mouse DPI
                 if device.dpi:
                     device.dpi.refresh()
                     widgets.append(self.special_controls.create_dpi_control(device))
@@ -271,7 +276,7 @@ class DevicesTab(shared.TabData):
                 if device.form_factor == "mouse":
                     widgets.append(self.special_controls.create_mouse_accel_control())
 
-            # Group controls if there are multiple zones
+            # Before adding to the main layout, use group boxes if there's multiple zones
             if len(device.zones) > 1:
                 group = self.widgets.create_group_widget(zone.label)
                 for widget in widgets:
@@ -337,7 +342,7 @@ class DevicesTab(shared.TabData):
 
         # Send request once dropped
         def _slider_dropped():
-            self.dbg.stdout(f"{self.current_device.name}: Applying option {option.uid} with value: {str(slider.value())}")
+            self.dbg.stdout(f"{self.current_device.name}: Applying option {option.uid} with value: {str(slider.value())}", self.dbg.action, 1)
             # TODO: Error checking with _event_check_response
             option.apply(slider.value())
         slider.sliderReleased.connect(_slider_dropped)
@@ -356,7 +361,7 @@ class DevicesTab(shared.TabData):
 
         def _state_changed():
             onoff = "on" if checkbox.isChecked() else "off"
-            self.dbg.stdout(f"{self.current_device.name}: Turning {onoff} option {option.uid}")
+            self.dbg.stdout(f"{self.current_device.name}: Turning {onoff} option {option.uid}", self.dbg.action, 1)
             # TODO: Error checking with _event_check_response
             option.apply(checkbox.isChecked())
 
@@ -383,7 +388,7 @@ class DevicesTab(shared.TabData):
 
         def _current_index_changed(index):
             param = params[index]
-            self.dbg.stdout(f"{self.current_device.name}: Setting option {option.uid} to {param.data}")
+            self.dbg.stdout(f"{self.current_device.name}: Setting option {option.uid} to {param.data}", self.dbg.action, 1)
             # TODO: Error checking with _event_check_response
             option.apply(param.data)
 
@@ -401,12 +406,12 @@ class DevicesTab(shared.TabData):
         #button.clicked.connect(_open_dialog)
         #return [self.create_widget_wrapper_for_control([button])]
 
-    def _create_control_button(self, device, zone, option):
+    def _create_control_button(self, option):
         """
         Returns a list of controls for the user to perform one click actions.
         """
         def _button_clicked():
-            self.dbg.stdout(f"{self.current_device.name}: Clicking option {option.uid}")
+            self.dbg.stdout(f"{self.current_device.name}: Clicking option {option.uid}", self.dbg.action, 1)
             # TODO: Error checking with _event_check_response
             option.apply()
 
@@ -444,12 +449,13 @@ class DevicesTab(shared.TabData):
             option = button.option
             param = self.middleman.get_default_parameter(option)
 
-            if param:
-                self.dbg.stdout(f"{self.current_device.name}: Setting effect {option.uid} (no parameters)")
-            else:
-                self.dbg.stdout(f"{self.current_device.name}: Setting effect {option.uid} (with parameter {str(param.data)}')")
             # TODO: Error checking with _event_check_response
-            option.apply(param)
+            if param:
+                self.dbg.stdout(f"{self.current_device.name}: Setting effect {option.uid} (with parameter {str(param.data)}')", self.dbg.action, 1)
+                option.apply(param.data)
+            else:
+                self.dbg.stdout(f"{self.current_device.name}: Setting effect {option.uid} (no parameters)", self.dbg.action, 1)
+                option.apply()
 
             self.reload_device()
 
@@ -468,18 +474,17 @@ class DevicesTab(shared.TabData):
             return None
 
         def _clicked_param_button():
-            for radio in self.btn_grps["radio_param_" + zone]:
+            for radio in self.btn_grps["radio_param_" + zone.zone_id]:
                 if not radio.isChecked():
                     continue
 
-                self.dbg.stdout(f"{device.name}: Setting parameter for '{option.uid}' to '{param.data}'", self.dbg.action, 1)
+                self.dbg.stdout(f"{device.name}: Setting parameter for '{option.uid}' to '{radio.param.data}'", self.dbg.action, 1)
 
                 # TODO: Error checking with _event_check_response
-                option.apply(param)
+                option.apply(radio.param.data)
                 self.reload_device()
 
-        widgets = []
-        for param in option.parameters:
+        def _make_button(param):
             radio = QRadioButton()
             radio.setText(param.label)
             radio.clicked.connect(_clicked_param_button)
@@ -492,10 +497,14 @@ class DevicesTab(shared.TabData):
             if param.icon:
                 radio.setIcon(QIcon(param.icon))
                 radio.setIconSize(QSize(22, 22))
+            return radio
 
-            widgets.append(radio)
+        option.refresh()
+        widgets = []
+        for param in option.parameters:
+            widgets.append(_make_button(param))
 
-        self.btn_grps["radio_param_" + zone] = widgets
+        self.btn_grps["radio_param_" + zone.zone_id] = widgets
         return self.widgets.create_row_widget(self._("Effect Mode"), widgets, vertical=True)
 
     def _create_colour_control(self, device, zone, pos, colours):
@@ -515,9 +524,9 @@ class DevicesTab(shared.TabData):
             label = self._("Colour 4").replace("4", str(pos))
 
         def _set_new_colour(new_hex, data):
-            self.dbg.stdout(f"{self.current_device.name}: Setting {label.lower()} to {new_hex} for active option in zone {zone}", self.dbg.action, 1)
+            self.dbg.stdout(f"{self.current_device.name}: Setting {label.lower()} to {new_hex} for active option in zone {zone.zone_id}", self.dbg.action, 1)
             # TODO: Error checking with _event_check_response
-            self.middleman.set_colour_for_active_effect(zone, new_hex, pos)
+            self.middleman.set_colour_for_active_effect_zone(zone, new_hex, pos)
 
         _set_data = {"zone": zone, "colour_no": pos}
 
@@ -533,7 +542,7 @@ class DevicesTab(shared.TabData):
 
         dbg = self.dbg
         _ = self._
-        backend_name = middleman.BACKEND_NAMES[self.current_backend]
+        backend_name = middleman.get_backend(self.current_device.backend_id).name
 
         if response == True:
             dbg.stdout("Request successful", dbg.success, 1)
