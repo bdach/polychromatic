@@ -27,8 +27,8 @@ class OpenRazerBackend(Backend):
 
     Thoughout the module:
     - 'rdevice' refers to an openrazer.client.devices.RazerDevice object.
-    - 'rzone' refers to a openrazer.client.fx.RazerFX (main) or
-                          openrazer.client.fx.SingleLed object (e.g. logo)
+    - 'rzone' refers to an openrazer.client.fx.RazerFX (main) or
+                           openrazer.client.fx.SingleLed object (e.g. logo)
     """
     def __init__(self, *args):
         super().__init__(*args)
@@ -43,6 +43,8 @@ class OpenRazerBackend(Backend):
 
         # Variables for OpenRazer
         self.devman = None
+        self.persistence_supported = True
+        self.persistence_fallback_path = os.path.join(self.get_config_store_path(), "persistence")
 
         # Client Settings
         # FIXME: Move image download to Controller only!
@@ -72,6 +74,14 @@ class OpenRazerBackend(Backend):
         except Exception as e:
             self.debug("Failed: Got an exception initialising device manager!")
             return self.get_exception_as_string(e)
+
+        # Persistence API was introduced in OpenRazer 3.0.0
+        if int(self.version.split(".")[0]) <= 3:
+            self.persistence_supported = False
+
+        if self.persistence_supported:
+            if not os.path.exists(self.persistence_fallback_path):
+                os.makedirs(self.persistence_fallback_path)
 
     def load_client_overrides(self):
         """
@@ -176,7 +186,16 @@ class OpenRazerBackend(Backend):
             self.debug("Got bad serial for {0}! Using dummy serial: {1}".format(rdevice.name, serial))
 
         # Device details
-        device = Backend.DeviceItem()
+        class OpenRazerDeviceItem(Backend.DeviceItem):
+            def refresh_state(self):
+                for zone in self.zones:
+                    zone._persistence.refresh()
+                    for option in zone.options:
+                        option.refresh()
+                if self.dpi:
+                    self.dpi.refresh()
+
+        device = OpenRazerDeviceItem()
         device._rdevice = rdevice
         device.name = str(rdevice.name)
         device.backend_id = self.backend_id
@@ -207,6 +226,8 @@ class OpenRazerBackend(Backend):
 
         # Add brightness & effects (per zone)
         for zone in device.zones:
+            zone._persistence = self._get_persistence(self._map_zone_id_to_rzone(rdevice, zone), zone, serial)
+
             brightness = self._get_brightness_option(rdevice, zone)
             if brightness:
                 zone.options.append(brightness)
@@ -243,6 +264,15 @@ class OpenRazerBackend(Backend):
             main_zone.options.append(self._get_key_remapping_option(rdevice))
 
         return device
+
+    def _get_persistence(self, rzone, zone, serial):
+        """
+        Returns OpenRazerPersistence() or OpenRazerPersistenceFallback()
+        depending on this running version of OpenRazer.
+        """
+        if self.persistence_supported:
+            return OpenRazerPersistence(rzone)
+        return OpenRazerPersistenceFallback(rzone, zone.zone_id, serial, self.persistence_fallback_path)
 
     def _get_dpi_object(self, rdevice):
         """
@@ -480,7 +510,7 @@ class OpenRazerBackend(Backend):
             return ""
 
         try:
-            # OpenRazer >= 2.9.0 (openrazer#1127)
+            # OpenRazer >= 2.9.0 (openrazer/openrazer#1127)
             image_url = rdevice.device_image
         except AttributeError:
             # Backwards compatiblity with OpenRazer <= 2.8.0
@@ -556,7 +586,7 @@ class OpenRazerBackend(Backend):
 
         return False
 
-    def _map_rdevice_to_zone(self, rdevice, zone):
+    def _map_zone_id_to_rzone(self, rdevice, zone):
         """
         Returns an object that directly references the OpenRazer's device "zone".
         """
@@ -567,14 +597,14 @@ class OpenRazerBackend(Backend):
             "backlight": rdevice.fx.misc.backlight
         }
 
-        # Introduced in OpenRazer 2.6.0, but not all devices list these anyway.
+        # Introduced in OpenRazer 2.6.0, but not all devices list these.
         try:
             zone_to_device["left"] = rdevice.fx.misc.left
             zone_to_device["right"] = rdevice.fx.misc.right
         except KeyError:
             pass
 
-        # Introduced in OpenRazer 3.0.0, but not all devices list these anyway.
+        # Introduced in OpenRazer 3.0.0, but not all devices list these.
         try:
             zone_to_device["charging"] = rdevice.fx.misc.charging
             zone_to_device["fully_charged"] = rdevice.fx.misc.fully_charged
@@ -607,36 +637,6 @@ class OpenRazerBackend(Backend):
 
         return rdevice.has(zone_to_capability[zone.zone_id] + "_" + capability)
 
-    def _convert_colour_bytes(self, rzone):
-        """
-        Convert the daemon's '.colors' function to a list consisting of #RRGGBB strings.
-        """
-        try:
-            input_hex = rzone.colors.hex()
-        except Exception:
-            # Not all devices have colour persistence available if unnecessary for device/zone.
-            # There is no other way but to try and fail gracefully (openrazer/openrazer#1380)
-            return ["#000000", "#000000", "#000000"]
-
-        primary_hex = "#000000"
-        secondary_hex = "#000000"
-        tertiary_hex = "#000000"
-
-        if len(input_hex) >= 6:
-            primary_hex = input_hex[:6]
-
-        if len(input_hex) >= 12:
-            secondary_hex = input_hex[6:12]
-
-        if len(input_hex) >= 18:
-            tertiary_hex = input_hex[12:18]
-
-        return [
-            "#" + primary_hex,
-            "#" + secondary_hex,
-            "#" + tertiary_hex
-        ]
-
     def _get_brightness_option(self, rdevice, zone):
         """
         Returns a Backend.Option derivative object based on the type of
@@ -652,7 +652,7 @@ class OpenRazerBackend(Backend):
             # This is provided in the root element, not .fx
             rzone = rdevice
         else:
-            rzone = self._map_rdevice_to_zone(rdevice, zone)
+            rzone = self._map_zone_id_to_rzone(rdevice, zone)
 
         # Device is a 'brightness' % variable
         if self._has_zone_capability(rdevice, zone, "brightness"):
@@ -661,7 +661,6 @@ class OpenRazerBackend(Backend):
                     super().__init__()
                     self._rzone = rzone
                     self.uid = "brightness"
-                    self.value = int(round(rzone.brightness))
                     self.min = 0
                     self.max = 100
                     self.step = 5
@@ -686,7 +685,6 @@ class OpenRazerBackend(Backend):
                     super().__init__()
                     self._rzone = rzone
                     self.uid = "brightness"
-                    self.active = True if rzone.active else False
 
                 def refresh(self):
                     self.active = True if self._rzone.active else False
@@ -712,10 +710,8 @@ class OpenRazerBackend(Backend):
         Returns list of Backend.EffectOption objects by determining
         which options/parameters are available for this device and zone.
         """
-        rzone = self._map_rdevice_to_zone(rdevice, zone)
+        rzone = self._map_zone_id_to_rzone(rdevice, zone)
         options = []
-        current_state = self._read_persistence_storage(rdevice, zone)
-        current_colours = self._convert_colour_bytes(rzone)
 
         has_ripple = self._has_zone_capability(rdevice, zone, "ripple")
         has_ripple_random = self._has_zone_capability(rdevice, zone, "ripple_random")
@@ -733,57 +729,64 @@ class OpenRazerBackend(Backend):
 
         if self._has_zone_capability(rdevice, zone, "none"):
             class NoneOption(Backend.EffectOption):
-                def __init__(self, rzone):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
+                    self._persistence = persistence
                     self.uid = "none"
 
                 def refresh(self):
-                    self.active = True if str(self._rzone.effect) == "none" else False
+                    self.active = True if self._persistence.state["effect"] == "none" else False
 
                 def apply(self, param=None):
                     self._rzone.none()
+                    self._persistence.save("effect", "none")
 
-            option = NoneOption(rzone)
+            option = NoneOption(rzone, zone._persistence)
             option.label = self._("None")
             option.icon = self.get_icon("options", "none")
             options.append(option)
 
         if self._has_zone_capability(rdevice, zone, "spectrum"):
             class SpectrumOption(Backend.EffectOption):
-                def __init__(self, rzone):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
+                    self._persistence = persistence
                     self.uid = "spectrum"
 
                 def refresh(self):
-                    self.active = True if str(self._rzone.effect) == "spectrum" else False
+                    self.active = True if self._persistence.state["effect"] == "spectrum" else False
 
                 def apply(self, param=None):
                     self._rzone.spectrum()
+                    self._persistence.save("effect", "spectrum")
 
-            option = SpectrumOption(rzone)
+            option = SpectrumOption(rzone, zone._persistence)
             option.label = self._("Spectrum")
             option.icon = self.get_icon("options", "spectrum")
             options.append(option)
 
         if self._has_zone_capability(rdevice, zone, "wave"):
             class WaveOption(Backend.EffectOption):
-                def __init__(self, rzone):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
+                    self._persistence = persistence
                     self.uid = "wave"
 
                 def refresh(self):
-                    self.active = True if str(self._rzone.effect) == "wave" else False
+                    self.active = True if self._persistence.state["effect"] == "wave" else False
                     for param in self.parameters:
-                        param.active = True if int(self._rzone.wave_dir) == param.data else False
+                        param.active = True if self._persistence.state["wave_dir"] == param.data else False
 
                 def apply(self, direction):
                     # direction: 1 or 2
                     self._rzone.wave(int(direction))
+                    self._persistence.save("effect", "wave")
+                    self._persistence.save("wave_dir", str(direction))
 
-            option = WaveOption(rzone)
+            option = WaveOption(rzone, zone._persistence)
             option.label = self._("Wave")
             option.icon = self.get_icon("options", "wave")
 
@@ -818,31 +821,34 @@ class OpenRazerBackend(Backend):
 
         if has_ripple or has_ripple_random:
             class RippleOption(Backend.EffectOption):
-                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
-                    self._convert_colour_bytes = convert_colour_bytes
+                    self._persistence = persistence
                     self.uid = "ripple"
-                    self.colours = current_colours
+                    self.colours = persistence.state["colours"]
 
                 def refresh(self):
-                    current_effect = str(self._rzone.effect)
+                    current_effect = self._persistence.state["effect"]
                     self.active = True if current_effect in ["ripple", "rippleRandomColour"] else False
                     for param in self.parameters:
                         if param.data == "random":
                             param.active = True if current_effect == "rippleRandomColour" else False
                         elif param.data == "single":
                             param.active = True if current_effect == "ripple" else False
-                    self.colours = self._convert_colour_bytes(self._rzone)
+                    self.colours = self._persistence.state["colours"]
 
                 def apply(self, ripple_type):
                     if str(ripple_type) == "random":
                         self._rzone.ripple_random()
+                        self._persistence.save("effect", "rippleRandomColour")
                     elif str(ripple_type) == "single":
                         rgb = common.hex_to_rgb(self.colours[0])
                         self._rzone.ripple(rgb[0], rgb[1], rgb[2])
+                        self._persistence.save("effect", "ripple")
+                        self._persistence.save("colour_1", self.colours[0])
 
-            option = RippleOption(rzone, current_colours, self._convert_colour_bytes)
+            option = RippleOption(rzone, zone._persistence)
             option.label = self._("Ripple")
             option.icon = self.get_icon("options", "ripple")
 
@@ -866,26 +872,28 @@ class OpenRazerBackend(Backend):
 
         if self._has_zone_capability(rdevice, zone, "reactive"):
             class ReactiveOption(Backend.EffectOption):
-                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
-                    self._convert_colour_bytes = convert_colour_bytes
+                    self._persistence = persistence
                     self.uid = "reactive"
                     self.colours_required = 1
-                    self.colours = current_colours
+                    self.colours = self._persistence.state["colours"]
 
                 def refresh(self):
-                    self.active = True if str(self._rzone.effect) == "reactive" else False
-                    speed = int(self._rzone.speed)
+                    self.active = True if self._persistence.state["effect"] == "reactive" else False
                     for param in self.parameters:
-                        param.active = True if speed == param.data else False
-                    self.colours = self._convert_colour_bytes(self._rzone)
+                        param.active = True if self._persistence.state["speed"] == param.data else False
+                    self.colours = self._persistence.state["colours"]
 
                 def apply(self, speed):
                     rgb = common.hex_to_rgb(self.colours[0])
                     self._rzone.reactive(rgb[0], rgb[1], rgb[2], int(speed))
+                    self._persistence.save("effect", "reactive")
+                    self._persistence.save("speed", str(speed))
+                    self._persistence.save("colour_1", self.colours[0])
 
-            option = ReactiveOption(rzone, current_colours, self._convert_colour_bytes)
+            option = ReactiveOption(rzone, zone._persistence)
             option.label = self._("Reactive")
             option.icon = self.get_icon("options", "reactive")
 
@@ -918,61 +926,65 @@ class OpenRazerBackend(Backend):
             # - API only exposes for 'logo' and 'scroll' zones.
             # - Only the Chroma Mug Holder supports this (as of 3.2.0)
             class BlinkingOption(Backend.EffectOption):
-                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
-                    self._convert_colour_bytes = convert_colour_bytes
+                    self._persistence = persistence
                     self.uid = "blinking"
                     self.colours_required = 1
-                    self.colours = current_colours
+                    self.colours = self._persistence.state["colours"]
 
                 def refresh(self):
-                    self.active = True if str(self._rzone.effect) == "blinking" else False
-                    self.colours = self._convert_colour_bytes(self._rzone)
+                    self.active = True if self._persistence.state["colours"] == "blinking" else False
+                    self.colours = self._persistence.state["colours"]
 
                 def apply(self, param=None):
                     rgb = common.hex_to_rgb(self.colours[0])
                     self._rzone.blinking(rgb[0], rgb[1], rgb[2])
+                    self._persistence.save("effect", "blinking")
+                    self._persistence.save("colour_1", self.colours[0])
 
-            option = BlinkingOption(rzone, current_colours, self._convert_colour_bytes)
+            option = BlinkingOption(rzone, zone._persistence)
             option.label = self._("Blinking")
             option.icon = self.get_icon("options", "blinking")
             options.append(option)
 
         if self._has_zone_capability(rdevice, zone, "static"):
             class StaticOption(Backend.EffectOption):
-                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
-                    self._convert_colour_bytes = convert_colour_bytes
+                    self._persistence = persistence
                     self.uid = "static"
                     self.colours_required = 1
-                    self.colours = current_colours
+                    self.colours = self._persistence.state["colours"]
 
                 def refresh(self):
-                    self.active = True if str(self._rzone.effect) == "static" else False
-                    self.colours = self._convert_colour_bytes(self._rzone)
+                    self.active = True if self._persistence.state["effect"] == "static" else False
+                    self.colours = self._persistence.state["colours"]
 
                 def apply(self, param=None):
                     rgb = common.hex_to_rgb(self.colours[0])
                     self._rzone.static(rgb[0], rgb[1], rgb[2])
+                    self._persistence.save("effect", "static")
+                    self._persistence.save("colour_1", self.colours[0])
 
-            option = StaticOption(rzone, current_colours, self._convert_colour_bytes)
+            option = StaticOption(rzone, zone._persistence)
             option.label = self._("Static")
             option.icon = self.get_icon("options", "static")
             options.append(option)
 
         if has_breath_random or has_breath_single or has_breath_dual or has_breath_triple:
             class BreathOption(Backend.EffectOption):
-                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
-                    self._convert_colour_bytes = convert_colour_bytes
+                    self._persistence = persistence
                     self.uid = "breath"
-                    self.colours = current_colours
+                    self.colours = self._persistence.state["colours"]
 
                 def refresh(self):
-                    current_effect = str(self._rzone.effect)
+                    current_effect = self._persistence.state["effect"]
                     if not current_effect.startswith("breath"):
                         self.active = False
                         return
@@ -980,7 +992,7 @@ class OpenRazerBackend(Backend):
                     current_breath_type = current_effect.split("breath")[1].lower()
                     for param in self.parameters:
                         param.active = True if current_breath_type == param.data else False
-                    self.colours = self._convert_colour_bytes(self._rzone)
+                    self.colours = self._persistence.state["colours"]
 
                 def apply(self, breath_type):
                     rgb = []
@@ -989,19 +1001,29 @@ class OpenRazerBackend(Backend):
 
                     if breath_type == "random":
                         self._rzone.breath_random()
+                        self._persistence.save("effect", "breathRandom")
                     elif breath_type == "single":
                         self._rzone.breath_single(rgb[0][0], rgb[0][1], rgb[0][2])
+                        self._persistence.save("effect", "breathSingle")
+                        self._persistence.save("colour_1", self.colours[0])
                     elif breath_type == "dual":
                         self._rzone.breath_dual(rgb[0][0], rgb[0][1], rgb[0][2],
                                                 rgb[1][0], rgb[1][1], rgb[1][2])
+                        self._persistence.save("effect", "breathDual")
+                        self._persistence.save("colour_1", self.colours[0])
+                        self._persistence.save("colour_2", self.colours[1])
                     elif breath_type == "triple":
                         self._rzone.breath_triple(rgb[0][0], rgb[0][1], rgb[0][2],
                                                   rgb[1][0], rgb[1][1], rgb[1][2],
                                                   rgb[2][0], rgb[2][1], rgb[2][2])
+                        self._persistence.save("effect", "breathTriple")
+                        self._persistence.save("colour_1", self.colours[0])
+                        self._persistence.save("colour_2", self.colours[1])
+                        self._persistence.save("colour_3", self.colours[2])
                     else:
                         raise KeyError("Unknown breath type: " + breath_type)
 
-            option = BreathOption(rzone, current_colours, self._convert_colour_bytes)
+            option = BreathOption(rzone, zone._persistence)
             option.label = self._("Breath")
             option.icon = self.get_icon("options", "breath")
 
@@ -1041,32 +1063,33 @@ class OpenRazerBackend(Backend):
 
         if has_starlight_random or has_starlight_single or has_starlight_dual:
             class StarlightOption(Backend.EffectOption):
-                def __init__(self, rzone, current_colours, convert_colour_bytes):
+                def __init__(self, rzone, persistence):
                     super().__init__()
                     self._rzone = rzone
-                    self._convert_colour_bytes = convert_colour_bytes
+                    self._persistence = persistence
                     self.uid = "starlight"
-                    self.colours = current_colours
+                    self.colours = self._persistence.state["colours"]
 
                 def refresh(self):
-                    current_effect = str(self._rzone.effect)
+                    current_effect = self._persistence.state["effect"]
                     if not current_effect.startswith("starlight"):
                         self.active = False
                         return
                     self.active = True
-                    current_breath = current_effect.split("starlight")[1].lower()
-                    current_speed = int(self._rzone.speed)
+                    current_starlight = current_effect.split("starlight")[1].lower()
+                    current_speed = self._persistence.state["speed"]
                     self.active = True if current_effect.startswith("starlight") else False
                     for param in self.parameters:
                         param.active = False
-                        if current_breath == param.data and current_speed == param._speed:
+                        starlight_type, starlight_speed = param.data.split(":")
+                        if current_starlight == starlight_type and str(current_speed) == starlight_speed:
                             param.active = True
-                    self.colours = self._convert_colour_bytes(self._rzone)
+                    self.colours = self._persistence.state["colours"]
 
-                def apply(self, param):
+                def apply(self, data):
                     # Param Example: "random:2" for a Medium (2) Random Starlight
-                    starlight_type = param.split(":")[0]
-                    starlight_speed = int(param.split(":")[1])
+                    starlight_type = data.split(":")[0]
+                    starlight_speed = int(data.split(":")[1])
 
                     rgb = []
                     for colour in self.colours:
@@ -1074,15 +1097,21 @@ class OpenRazerBackend(Backend):
 
                     if starlight_type == "random":
                         self._rzone.starlight_random(starlight_speed)
+                        self._persistence.save("effect", "starlightRandom")
                     elif starlight_type == "single":
                         self._rzone.starlight_single(rgb[0][0], rgb[0][1], rgb[0][2], starlight_speed)
+                        self._persistence.save("colour_1", self.colours[0])
+                        self._persistence.save("effect", "starlightSingle")
                     elif starlight_type == "dual":
                         self._rzone.starlight_dual(rgb[0][0], rgb[0][1], rgb[0][2],
                                                    rgb[1][0], rgb[1][1], rgb[1][2], starlight_speed)
+                        self._persistence.save("colour_1", self.colours[0])
+                        self._persistence.save("colour_2", self.colours[1])
+                        self._persistence.save("effect", "starlightDual")
                     else:
-                        raise KeyError("Unknown starlight parameter:" + str(param))
+                        raise KeyError("Unknown starlight parameter:" + str(data))
 
-            option = StarlightOption(rzone, current_colours, self._convert_colour_bytes)
+            option = StarlightOption(rzone, zone._persistence)
             option.label = self._("Starlight")
             option.icon = self.get_icon("options", "starlight")
 
@@ -1096,6 +1125,7 @@ class OpenRazerBackend(Backend):
                 for speed in speeds.keys():
                     random = Backend.Option.Parameter()
                     random.data = "random:" + str(speed)
+                    random._speed = speed
                     random.label = "{0} ({1})".format(self._("Random"), speeds[speed])
                     random.icon = self.get_icon("params", "random")
                     option.parameters.append(random)
@@ -1104,6 +1134,7 @@ class OpenRazerBackend(Backend):
                 for speed in speeds.keys():
                     single = Backend.Option.Parameter()
                     single.data = "single:" + str(speed)
+                    single._speed = speed
                     single.label = "{0} ({1})".format(self._("Single"), speeds[speed])
                     single.icon = self.get_icon("params", "single")
                     single.colours_required = 1
@@ -1114,6 +1145,7 @@ class OpenRazerBackend(Backend):
                 for speed in speeds.keys():
                     dual = Backend.Option.Parameter()
                     dual.data = "dual:" + str(speed)
+                    dual._speed = speed
                     dual.label = "{0} ({1})".format(self._("Dual"), speeds[speed])
                     dual.icon = self.get_icon("params", "dual")
                     dual.colours_required = 2
@@ -1137,6 +1169,8 @@ class OpenRazerBackend(Backend):
         try:
             if "razer.device.lighting.bw2013" in rdevice._available_features.keys():
                 vidpid = self._get_device_vid_pid(rdevice)
+                persistence = OpenRazerPersistenceFallback(None, "main", rdevice.serial, self.perpistence_path)
+
                 try:
                     matrix_file_pulsate = glob.glob("/sys/bus/hid/drivers/razer*/*{0}:{1}*/matrix_effect_pulsate".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
                     matrix_file_static = glob.glob("/sys/bus/hid/drivers/razer*/*{0}:{1}*/matrix_effect_static".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
@@ -1146,38 +1180,40 @@ class OpenRazerBackend(Backend):
                     matrix_file_static = glob.glob("/tmp/**/*{0}:{1}*/matrix_effect_static".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
 
                 class PulsateOptionBW2013(Backend.EffectOption):
-                    def __init__(self, sysfs_path):
+                    def __init__(self, persistence, sysfs_path):
                         super().__init__()
+                        self._persistence = persistence
                         self.sysfs_path = sysfs_path
                         self.uid = "pulsate"
 
                     def refresh(self):
-                        # FIXME: Use file-based persistence
-                        self.active = False
+                        self.active = True if self._persistence.state["effect"] == "pulsate" else False
 
                     def apply(self, param=None):
                         with open(self.sysfs_path, "w") as f:
                             f.write("1")
+                        self._persistence.save("effect", "pulsate")
 
                 class StaticOptionBW2013(Backend.EffectOption):
-                    def __init__(self, sysfs_path):
+                    def __init__(self, persistence, sysfs_path):
                         super().__init__()
                         self.sysfs_path = sysfs_path
+                        self._persistence = persistence
                         self.uid = "static"
 
                     def refresh(self):
-                        # FIXME: Use file-based persistence
-                        self.active = False
+                        self.active = True if self._persistence.state["effect"] == "static" else False
 
                     def apply(self, param=None):
                         with open(self.sysfs_path, "w") as f:
                             f.write("1")
+                        self._persistence.save("effect", "static")
 
-                pulsate = PulsateOptionBW2013(matrix_file_pulsate)
+                pulsate = PulsateOptionBW2013(persistence, matrix_file_pulsate)
                 pulsate.label = self._("Pulsate")
                 pulsate.icon = self.get_icon("options", "pulsate")
 
-                static = StaticOptionBW2013(matrix_file_static)
+                static = StaticOptionBW2013(persistence, matrix_file_static)
                 static.label = self._("Static")
                 static.icon = self.get_icon("options", "static")
 
@@ -1227,10 +1263,10 @@ class OpenRazerBackend(Backend):
                 param.icon = self.get_icon("params", "poll_hyper")
             elif rate > 500:
                 param.icon = self.get_icon("params", "poll_high")
-            elif rate == 500:
-                param.icon = self.get_icon("params", "poll_med")
             elif rate < 500:
                 param.icon = self.get_icon("params", "poll_low")
+            else:
+                param.icon = self.get_icon("params", "poll_mid")
 
             parameters.append(param)
 
@@ -1308,7 +1344,6 @@ class OpenRazerBackend(Backend):
             idle_time.icon = self.get_icon("options", "sleep")
             idle_time.suffix = self._("minute")
             idle_time.suffix_plural = self._("minutes")
-            idle_time.refresh()
             options.append(idle_time)
 
         except Exception as e:
@@ -1336,7 +1371,6 @@ class OpenRazerBackend(Backend):
             low_bat_thres = LowBatteryThresholdOption(rdevice)
             low_bat_thres.label = self._("Low Power Mode")
             low_bat_thres.icon = self.get_icon("options", "low_battery")
-            low_bat_thres.refresh()
             options.append(low_bat_thres)
 
         except Exception as e:
@@ -1378,106 +1412,6 @@ class OpenRazerBackend(Backend):
             "https://polychromatic.app/permalink/keymapping/")
         return option
 
-    def _read_persistence_storage(self, rdevice, zone):
-        """
-        OpenRazer 3.0 uses persistence storage to track the last effect,
-        colours and parameters. If the daemon currently running does not have
-        this feature, continue with a file-based fallback.
-        """
-        rzone = self._map_rdevice_to_zone(rdevice, zone)
-
-        try:
-            if not hasattr(rzone, "effect"):
-                # Current OpenRazer version doesn't have persistence
-                self.debug("Daemon persistence unavailable, falling back.")
-                return self._read_persistence_storage_fallback(rdevice, zone)
-        except Exception:
-            # Device/zone does not need persistence, return generic data
-            # https://github.com/openrazer/openrazer/issues/1380
-            self.debug("Persistence read unnecessary for {0} (Zone: {1})".format(rdevice.name, zone))
-            return {
-                "effect": "",
-                "colour_1": "#000000",
-                "colour_2": "#000000",
-                "colour_3": "#000000",
-                "wave_dir": 1,
-                "speed":  2
-            }
-
-        try:
-            colours = self._convert_colour_bytes(rzone)
-            return {
-                "effect": str(rzone.effect),
-                "colour_1": colours[0],
-                "colour_2": colours[1],
-                "colour_3": colours[2],
-                "wave_dir": int(rzone.wave_dir),
-                "speed": int(rzone.speed)
-            }
-        except Exception as e:
-            self.debug("Failed to read persistence, falling back!")
-            self.debug("The exception was: " + str(e))
-            return self._read_persistence_storage_fallback(rdevice, zone)
-
-    def _get_persistence_storage_fallback_path(self):
-        """
-        Prepare the 'fallback' persistence storage if the daemon's is unavailable.
-        """
-        storage_dir = os.path.join(self.get_config_store_path(), "persistence")
-
-        if not os.path.exists(storage_dir):
-            os.makedirs(storage_dir)
-
-        return storage_dir
-
-    def _read_persistence_storage_fallback(self, rdevice, zone):
-        """
-        In case the daemon's persistence storage is unavailable, use flat files
-        stored on the filesystem.
-        """
-        zone = zone.zone_id
-        storage_dir = self._get_persistence_storage_fallback_path()
-        key_name_suffix = "{0}_{1}".format(rdevice.serial, zone)
-
-        def _get_data(data_name, data_type, default_value):
-            file_path = os.path.join(storage_dir, key_name_suffix + "_" + data_name)
-            if not os.path.exists(file_path):
-                return default_value
-            with open(file_path) as f:
-                return data_type(f.readline())
-
-        return {
-            "effect": _get_data("effect", str, "spectrum"),
-            "colour_1": _get_data("colour_1", str, "#00FF00"),
-            "colour_2": _get_data("colour_2", str, "#FF0000"),
-            "colour_3": _get_data("colour_3", str, "#0000FF"),
-            "wave_dir": _get_data("wave_dir", int, 1),
-            "speed":  _get_data("speed", int, 2)
-        }
-
-    def _write_persistence_storage_fallback(self, rdevice, zone, rzone, key, value):
-        """
-        If the daemon does not support persistence storage (e.g. old version)
-        then write to files instead.
-
-        Setting effects also summons this function, in case the daemon version
-        doesn't have the persistence feature, otherwise the state would be lost.
-        """
-        try:
-            if hasattr(rzone, "effect"):
-                # No need to write to file, daemon will have processed persistence
-                return
-        except Exception:
-            # Workaround API throwing a DBUS exception
-            # https://github.com/openrazer/openrazer/issues/1380
-            return
-
-        storage_dir = self._get_persistence_storage_fallback_path()
-        key_name_suffix = "{0}_{1}_{2}".format(rdevice.serial, zone, key)
-        file_path = os.path.join(storage_dir, key_name_suffix)
-        with open(file_path, "w") as f:
-            f.write(str(value))
-
     def restart(self):
         """
         Immediately restart the daemon process.
@@ -1499,3 +1433,95 @@ class OpenRazerBackend(Backend):
 
         self.debug("Waiting for openrazer-daemon to start (2s)...")
         time.sleep(2)
+
+
+class OpenRazerPersistence(object):
+    """
+    Use OpenRazer's persistence API introduced in v3.0.0. Each 'fx' zone contains
+    variables that the daemon uses for storing the last effect, parameters and colours.
+
+    Due to a daemon bug, there is no way to tell if a device does not support/need
+    persistence, so we must fail gracefully (#294, openrazer/openrazer#1380)
+    """
+    state = {
+        "effect": "spectrum",
+        "colours": ["#00FF00", "#FF0000", "#0000FF"],
+        "wave_dir": 1,
+        "speed": 2,
+    }
+
+    def __init__(self, rzone, zone_id=None, serial=None, path=None):
+        self.rzone = rzone
+
+    def _convert_colour_bytes(self, rzone):
+        """
+        Convert the daemon's '.colors' hex output to a list consisting of #RRGGBB strings.
+        """
+        input_hex = rzone.colors.hex()
+
+        if len(input_hex) >= 6:
+            primary_hex = input_hex[:6]
+
+        if len(input_hex) >= 12:
+            secondary_hex = input_hex[6:12]
+
+        if len(input_hex) >= 18:
+            tertiary_hex = input_hex[12:18]
+
+        return [
+            "#" + primary_hex,
+            "#" + secondary_hex,
+            "#" + tertiary_hex
+        ]
+
+    def refresh(self):
+        try:
+            self.state["effect"] = str(self.rzone.effect)
+            self.state["wave_dir"] = int(self.rzone.wave_dir)
+            self.state["speed"] = int(self.rzone.speed)
+            self.state["colours"] = self._convert_colour_bytes(self.rzone)
+        except Exception:
+            pass
+
+    def save(self, key, value):
+        # Not applicable. The daemon is taking care of storing persistence.
+        return
+
+
+class OpenRazerPersistenceFallback(OpenRazerPersistence):
+    """
+    Use a file-based persistence for backwards compatibility (<= 2.9.0)
+    """
+    def __init__(self, rzone, zone_id, serial, path):
+        self.rzone = rzone
+        self.zone_id = zone_id
+        self.serial = serial
+        self.persistence_path = path
+
+    def _get_key_path(self, key):
+        return os.path.join(self.persistence_path, f"{self.serial}_{self.zone_id}_{key}")
+
+    def _get_data(self, key, data_type):
+        file_path = self._get_key_path(key)
+        if os.path.exists(file_path):
+            with open(file_path) as f:
+                self.state[key] = data_type(f.readline())
+
+    def refresh(self):
+        self._get_data("effect", str)
+        self._get_data("wave_dir", int)
+        self._get_data("speed", int)
+        self._get_data("colour_1", str)
+        self._get_data("colour_2", str)
+        self._get_data("colour_3", str)
+        self.state["colours"] = [
+            self.state["colour_1"],
+            self.state["colour_2"],
+            self.state["colour_3"],
+        ]
+
+    def save(self, key, value):
+        if not os.path.exists(self.persistence_path):
+            os.makedirs(self.persistence_path)
+        with open(self._get_key_path(key), "w") as f:
+            f.writeline(value)

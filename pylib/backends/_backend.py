@@ -203,6 +203,23 @@ class Backend(object):
         def __repr__(self):
             return "{0}:{1}".format(self.serial, self.name.replace(" ", ""))
 
+        def refresh_state(self):
+            """
+            This function is called before showing the current status for a device, such as:
+            - Controller: After selecting/refreshing a device in the Device tab
+            - Tray: Once when the applet starts
+            - CLI: Listing the current device status
+
+            It is expected the device's options and features have their correct values at this
+            point, and acts as a cache until the device is refreshed again. It co-exists alongside
+            each option's .refresh() function, which is used when the application needs
+            to refresh a specific option or feature.
+
+            Each backend may implement this differently depending whether the
+            hardware knows what it's up to or if it uses a software persistence implementation.
+            """
+            return
+
         def get_summary(self):
             """
             Returns a list describing the current hardware state of the device,

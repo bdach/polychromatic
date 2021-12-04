@@ -207,6 +207,7 @@ class DevicesTab(shared.TabData):
         summary = self.widgets.create_summary_widget(real_image, device.name, indicators, buttons)
         layout.addWidget(summary)
 
+        device.refresh_state()
         for zone in device.zones:
             widgets = []
             first_zone = True if device.zones[0] == zone else False
@@ -217,8 +218,6 @@ class DevicesTab(shared.TabData):
             effects_index = 0
 
             for index, option in enumerate(zone.options):
-                option.refresh()
-
                 if isinstance(option, Backend.EffectOption):
                     if not has_effects:
                         has_effects = True
@@ -231,8 +230,6 @@ class DevicesTab(shared.TabData):
             def _get_effect_options(zone, ignore_state):
                 options = []
                 for option in zone.options:
-                    option.refresh()
-
                     # Override active flag when software effect is running.
                     if ignore_state:
                         option.active = False
@@ -266,7 +263,6 @@ class DevicesTab(shared.TabData):
             if first_zone:
                 # -- Mouse DPI
                 if device.dpi:
-                    device.dpi.refresh()
                     widgets.append(self.special_controls.create_dpi_control(device))
 
                 # TODO: Button to set compatible software effects here
@@ -499,7 +495,6 @@ class DevicesTab(shared.TabData):
                 radio.setIconSize(QSize(22, 22))
             return radio
 
-        option.refresh()
         widgets = []
         for param in option.parameters:
             widgets.append(_make_button(param))
@@ -972,10 +967,15 @@ class DevicesTab(shared.TabData):
             cfx = mkitem(_("Custom Effects"))
             cfx.addChild(mkitem(_("Supported"), True if device.matrix else False))
             if device.matrix:
+                btn_test_matrix.setDisabled(False)
                 dimensions = common.get_plural(device.matrix.rows, _("1 row"), _("2 rows").replace("2", str(device.matrix.rows)))
                 dimensions += ", " + common.get_plural(device.matrix.cols, _("1 column"), _("2 columns").replace("2", str(device.matrix.cols)))
                 cfx.addChild(mkitem(_("Matrix Dimensions"), dimensions, common.get_icon("general", "matrix")))
-                btn_test_matrix.setDisabled(False)
+
+                if device.monochromatic:
+                    cfx.addChild(mkitem(_("Colour Range"), _("256 colours"), common.get_icon("params", "triple")))
+                else:
+                    cfx.addChild(mkitem(_("Colour Range"), _("16 million colours"), common.get_icon("tray", "ring")))
             tree.addTopLevelItem(cfx)
 
             # DPI
@@ -1018,7 +1018,7 @@ class DevicesTab(shared.TabData):
                     option_item = mkitem(option.label, "", option.icon)
                     exclude_expand.append(option_item)
 
-                    option_type = "Unknown Option"
+                    option_type = "Unknown"
                     if isinstance(option, Backend.EffectOption):
                         option_type = _("Effect")
                     elif isinstance(option, Backend.ToggleOption):
