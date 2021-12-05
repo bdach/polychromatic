@@ -29,6 +29,11 @@ class DummyDPI(Backend.DeviceItem.DPI):
         self.max = 16000
 
         self.path = os.path.expanduser(f"~/.cache/polychromatic/test_dpi_{serial}")
+
+        # Write initial DPI files
+        dpi_dir = os.path.dirname(self.path)
+        if not os.path.exists(dpi_dir):
+            os.makedirs(dpi_dir)
         self.set(self.x, self.y)
 
     def refresh(self):
