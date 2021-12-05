@@ -1167,7 +1167,7 @@ class OpenRazerBackend(Backend):
         try:
             if "razer.device.lighting.bw2013" in rdevice._available_features.keys():
                 vidpid = self._get_device_vid_pid(rdevice)
-                persistence = OpenRazerPersistenceFallback(None, "main", rdevice.serial, self.perpistence_path)
+                persistence = OpenRazerPersistenceFallback(None, "main", rdevice.serial, self.persistence_fallback_path)
 
                 try:
                     matrix_file_pulsate = glob.glob("/sys/bus/hid/drivers/razer*/*{0}:{1}*/matrix_effect_pulsate".format(vidpid["vid"], vidpid["pid"]), recursive=True)[0]
@@ -1496,6 +1496,11 @@ class OpenRazerPersistenceFallback(OpenRazerPersistence):
         self.serial = serial
         self.persistence_path = path
 
+        # "colours" will be saved as separate files
+        self.state["colour_1"] = self.state["colours"][0]
+        self.state["colour_2"] = self.state["colours"][1]
+        self.state["colour_3"] = self.state["colours"][2]
+
     def _get_key_path(self, key):
         return os.path.join(self.persistence_path, f"{self.serial}_{self.zone_id}_{key}")
 
@@ -1522,4 +1527,4 @@ class OpenRazerPersistenceFallback(OpenRazerPersistence):
         if not os.path.exists(self.persistence_path):
             os.makedirs(self.persistence_path)
         with open(self._get_key_path(key), "w") as f:
-            f.writeline(value)
+            f.write(value)

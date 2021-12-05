@@ -10,7 +10,7 @@ import unittest
 # Polychromatic Modules
 from pylib import common as common
 from pylib.backends._backend import Backend
-from pylib.backends.openrazer import OpenRazerBackend
+from pylib.backends.openrazer import OpenRazerBackend, OpenRazerPersistence, OpenRazerPersistenceFallback
 from pylib import preferences as pref
 
 # External
@@ -79,13 +79,10 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
         self.assertTrue(self.openrazer.init(), "OpenRazerBackend could not init")
 
     def test_client_override(self):
-        # Perform what the GUI would do
-        client_dir = os.path.expanduser("~/.config/polychromatic/backends/openrazer/")
-        client_file = "ripple_refresh_rate"
-        if not os.path.exists(client_dir):
-            os.makedirs(client_dir)
+        ripple_override_path = os.path.join(self.openrazer.get_config_store_path(), "ripple_refresh_rate")
 
-        with open(os.path.join(client_dir, client_file), "w") as f:
+        # Perform what the GUI would do
+        with open(ripple_override_path, "w") as f:
             f.write("1")
 
         # Does it load correctly?
@@ -181,10 +178,6 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
         device = self.get_device("Razer Kraken Ultimate")
         self.assertTrue(device.monochromatic == False, "Device incorrectly reporting monochromatic status")
 
-    def test_colour_persistence_conversion(self):
-        rdevice = self.get_rdevice("Razer Mamba Tournament Edition")
-        self.openrazer._convert_colour_bytes(rdevice.fx)
-
     def test_capability_main(self):
         rdevice = self.get_rdevice("Razer Mamba Tournament Edition")
         zone = OpenRazerBackend.DeviceItem.Zone()
@@ -245,7 +238,7 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
         static.colours[0] = "#123456"
         static.apply()
         static.colours[0] = "#000000"
-        static.refresh()
+        device.refresh()
         self.assertTrue(static.colours[0] == "#123456", "Persistence did not read/write as expected.")
 
     def test_option_brightness_main(self):
@@ -290,7 +283,7 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
         none.apply()
         static.apply()
         none.refresh()
-        static.refresh()
+        device.refresh()
         self.assertTrue(none.active == False and static.active == True, "Could not set effect active state")
 
     def test_option_effect_none(self):
@@ -395,6 +388,10 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
                 raise KeyError("Duplicate option UIDs for " + device.name + \
                     f"! {len(all_options)} UIDs but only {len(filtered_options)} unique: {str(all_options)}")
 
+    def test_all_devices_refresh(self):
+        for device in self.openrazer.get_devices():
+            device.refresh()
+
     def test_all_options_refresh(self):
         for device in self.openrazer.get_devices():
             for zone in device.zones:
@@ -403,6 +400,7 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
 
     def test_all_options_apply(self):
         for device in self.openrazer.get_devices():
+            device.refresh()
             for zone in device.zones:
                 for option in zone.options:
                     if isinstance(option, Backend.EffectOption):
@@ -420,6 +418,26 @@ class OpenRazerMiddlemanTest(unittest.TestCase):
                     elif isinstance(option, Backend.ButtonOption):
                         option.apply()
                     option.refresh()
+
+    def test_persistence_colour_bytes(self):
+        rdevice = self.get_rdevice("Razer Mamba Tournament Edition")
+        persistence = OpenRazerPersistence(rdevice.fx, "main", rdevice.serial, self.openrazer.persistence_fallback_path)
+        persistence._convert_colour_bytes(rdevice.fx)
+
+    def test_persistence_refresh(self):
+        rdevice = self.get_rdevice("Razer Mamba Tournament Edition")
+        persistence = OpenRazerPersistence(rdevice.fx, "main", rdevice.serial, self.openrazer.persistence_fallback_path)
+        persistence.refresh()
+
+    def test_persistence_fallback_read(self):
+        rdevice = self.get_rdevice("Razer Mamba Tournament Edition")
+        persistence = OpenRazerPersistenceFallback(rdevice.fx, "main", rdevice.serial, self.openrazer.persistence_fallback_path)
+        persistence.refresh()
+
+    def test_persistence_fallback_write(self):
+        rdevice = self.get_rdevice("Razer Mamba Tournament Edition")
+        persistence = OpenRazerPersistenceFallback(rdevice.fx, "main", rdevice.serial, self.openrazer.persistence_fallback_path)
+        persistence.save("effect", "static")
 
 
 if __name__ == '__main__':
