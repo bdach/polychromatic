@@ -184,7 +184,7 @@ class DevicesTab(shared.TabData):
         summary = self.widgets.create_summary_widget(real_image, device.name, indicators, buttons)
         layout.addWidget(summary)
 
-        device.refresh_state()
+        device.refresh()
         for zone in device.zones:
             widgets = []
             first_zone = True if device.zones[0] == zone else False

@@ -187,7 +187,7 @@ class OpenRazerBackend(Backend):
 
         # Device details
         class OpenRazerDeviceItem(Backend.DeviceItem):
-            def refresh_state(self):
+            def refresh(self):
                 for zone in self.zones:
                     zone._persistence.refresh()
                     for option in zone.options:

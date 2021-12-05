@@ -437,7 +437,7 @@ if args.list_options:
             colours = str(option.colours_required) if option.colours_required > 0 else ""
             rows.append([zone.zone_id, option.uid, params, colours])
 
-        device.refresh_state()
+        device.refresh()
         for zone in device.zones:
             for option in zone.options:
                 column_params = ""

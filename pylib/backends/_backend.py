@@ -203,7 +203,7 @@ class Backend(object):
         def __repr__(self):
             return "{0}:{1}".format(self.serial, self.name.replace(" ", ""))
 
-        def refresh_state(self):
+        def refresh(self):
             """
             This function is called before showing the current status for a device, such as:
             - Controller: After selecting/refreshing a device in the Device tab

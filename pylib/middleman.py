@@ -294,7 +294,7 @@ class Middleman(object):
         opening the effect editor which was physically previewing on the hardware.
         """
         # TODO: Catch error?
-        device.refresh_state()
+        device.refresh()
 
         # Was the device playing a software effect?
         state = procpid.DeviceSoftwareState(device.serial)
