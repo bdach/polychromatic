@@ -683,7 +683,7 @@ class Callback():
             attr    [option_id, option_data, colours_needed]
         """
         option_id, option_data, colours_needed = attr
-        middleman.set_bulk_option(option_id, option_data, colours_needed)
+        print("fixme:set_bulk_option")
 
     @staticmethod
     def set_bulk_colour(item, attr):
@@ -695,7 +695,7 @@ class Callback():
             attr    [hex_value]
         """
         new_colour_hex = attr[0]
-        middleman.set_bulk_colour(new_colour_hex)
+        print("fixme:set_bulk_colour")
 
     @staticmethod
     def set_custom_colour(item, attr):
@@ -722,10 +722,9 @@ class Callback():
             hex_value = common.rgb_to_hex([red, green, blue])
 
             # Apply colour to device
-            dbg.stdout("Set custom colour for {0} to '{1}'".format(device["name"], hex_value), dbg.debug, 1)
+            dbg.stdout("Set custom colour for {0} to '{1}'".format(device.name, hex_value), dbg.debug, 1)
             # TODO: Catch errors
             middleman.set_colour_for_active_effect_device(device, hex_value)
-            _verbose_check_status(r)
 
         color_selection_dlg.destroy()
 
@@ -745,20 +744,6 @@ class Callback():
         procmgr.start_component(["--run-fx", path, "--device-name", device_name])
 
 
-def _verbose_check_status(result):
-    """
-    When using the verbose parameter (-v), output details if a request made
-    to the backend was successful.
-    """
-    if type(result) == str:
-        dbg.stdout("An exception occurred processing this request:", dbg.error)
-        dbg.stdout(result, dbg.error)
-    elif result == True:
-        dbg.stdout("Request OK", dbg.success, 1)
-    elif result == None:
-        dbg.stdout("Device Missing", dbg.warning, 1)
-    elif result == False:
-        dbg.stdout("Request unsuccessful - may be unsupported by the device.", dbg.normal, 1)
 
 
 def parse_parameters():

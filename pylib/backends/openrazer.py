@@ -245,8 +245,6 @@ class OpenRazerBackend(Backend):
             device.dpi = None
             main_zone.options.append(self._get_dpi_fixed_object(rdevice))
 
-        if rdevice.has("dpi_stages"):
-            main_zone.options.append(self._get_dpi_sync_option(rdevice))
 
         if rdevice.has("poll_rate"):
             main_zone.options.append(self._get_poll_rate_option(rdevice))

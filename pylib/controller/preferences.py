@@ -331,10 +331,7 @@ class PreferencesWindow(shared.TabData):
         spinbox_is_zero = self.dialog.findChild(QSpinBox, "DPIStage1").value() == 0
 
         # Is there a mouse? Disable section if none is present.
-        mice_present = False
-
-        if self.appdata.device_list:
-            mice_present = len(self.appdata.middleman.get_filtered_device_list("mouse")) > 0
+        mice_present = len(self.appdata.middleman.get_devices_by_form_factor("mouse")) > 0
 
         for control in [label, checkbox, spinbox_widget]:
             control.setDisabled(not mice_present)
@@ -353,27 +350,22 @@ class PreferencesWindow(shared.TabData):
         """
         Reset user defined DPI stages to a DPI-capable mouse.
         """
-        mice_present = len(self.appdata.middleman.get_filtered_device_list("mouse")) > 0
-        if not mice_present:
+        mice = len(self.appdata.middleman.get_devices_by_form_factor("mouse")) > 0
+        if not mice:
             return
 
-        mouse_device = None
-        for device in self.appdata.device_list:
-            if device["form_factor"]["id"] == "mouse":
-                device = self.appdata.middleman.get_device(device["backend"], device["uid"])
-                if device["dpi_stages"]:
-                    mouse_device = device
-                    break
+        device = mice[0]
+        if not device.dpi or not device.dpi.stages:
+            return
 
-        if mouse_device:
-            self.dbg.stdout("Setting user-defined DPI stages to '{0}'".format(device["name"]), self.dbg.action, 1)
-            default_dpi_stages = device["dpi_stages"]
-            try:
-                for i in range(1, 6):
-                    self.dialog.findChild(QSpinBox, "DPIStage" + str(i)).setValue(default_dpi_stages[i - 1])
-            except (IndexError, AttributeError):
-                # 5 stages not guaranteed
-                pass
+        self.dbg.stdout("Setting user-defined DPI stages to '{0}'".format(device.name), self.dbg.action, 1)
+        default_dpi_stages = device.dpi.stages
+        try:
+            for i in range(1, 6):
+                self.dialog.findChild(QSpinBox, "DPIStage" + str(i)).setValue(default_dpi_stages[i - 1])
+        except (IndexError, AttributeError):
+            # 5 stages not guaranteed
+            pass
 
     def modify_colours(self):
         """

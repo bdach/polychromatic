@@ -168,31 +168,8 @@ class DevicesTab(shared.TabData):
         # The summary indicators only show current effect/preset when set
         # TODO: Split to _get_summary() function?
         print("fixme:device state")
-        state_effect = state_preset = None
 
-        if state_preset:
-            indicators = [
-                {
-                    "icon": None,
-                    "label": self._("Preset:")
-                },
-                {
-                    "icon": state_preset["icon"],
-                    "label": state_preset["name"]
-                }
-            ]
 
-        elif state_effect:
-            indicators = [
-                {
-                    "icon": None,
-                    "label": self._("Playing:")
-                },
-                {
-                    "icon": state_effect["icon"],
-                    "label": state_effect["name"]
-                }
-            ]
 
         buttons = [
             {
@@ -227,11 +204,11 @@ class DevicesTab(shared.TabData):
                 widgets.append(self._create_row_control(option))
 
             # Controls for effects, its parameters and colours
-            def _get_effect_options(zone, ignore_state):
+            def _get_effect_options(zone, force_inactive):
                 options = []
                 for option in zone.options:
                     # Override active flag when software effect is running.
-                    if ignore_state:
+                    if force_inactive:
                         option.active = False
 
                     if isinstance(option, Backend.EffectOption):
@@ -239,7 +216,8 @@ class DevicesTab(shared.TabData):
 
                 return options
 
-            effect_options = _get_effect_options(zone, state_effect)
+            # FIXME: Reinstate "state_effect" check
+            effect_options = _get_effect_options(zone, False)
             active_effect = self.middleman.get_active_effect(zone)
             effect_row = self._create_effect_controls(zone, effect_options)
             if effect_row:
@@ -538,7 +516,7 @@ class DevicesTab(shared.TabData):
 
         dbg = self.dbg
         _ = self._
-        backend_name = middleman.get_backend(self.current_device.backend_id).name
+        backend_name = self.middleman.get_backend(self.current_device.backend_id).name
 
         if response == True:
             dbg.stdout("Request successful", dbg.success, 1)
