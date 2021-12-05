@@ -128,9 +128,12 @@ jobs:
 
     - name: Install OpenRazer Backend
       run: |
-        git clone https://github.com/openrazer/openrazer --depth=1 "$GITHUB_WORKSPACE/openrazer"
-        sudo add-apt-repository ppa:openrazer/daily
-        sudo apt-get install openrazer-daemon python3-openrazer dbus-x11
+        git clone https://github.com/lah7/openrazer -b sysfs-daemon-test --depth 1 "$GITHUB_WORKSPACE/openrazer"
+        sudo apt-get install debhelper dh-python dkms python3-setuptools
+        cd openrazer
+        ./scripts/build_debs.sh
+        sudo apt install ./dist/*.deb
+        sudo apt-get install dbus-x11
 
     - name: Development Build
       run: |
