@@ -424,10 +424,10 @@ class PolychromaticTrayApplet():
                 if isinstance(option, (Backend.EffectOption, Backend.MultipleChoiceOption)):
                     # Option does not accept parameters, just a button
                     if len(option.parameters) == 0:
-                        indicator.create_menu_item(submenu, option.label, True, cb.apply_option, [option, None, 0], option.icon)
+                        indicator.create_menu_item(submenu, option.label, True, cb.apply_option, [option, None, 0, device], option.icon)
                     else:
                         # Create a submenu for effects
-                        indicator.add_menu_item(submenu, self.create_parameters_menu(option))
+                        indicator.add_menu_item(submenu, self.create_parameters_menu(option, device))
 
                         for param in option.parameters:
                             if param.colours_required > 0:
@@ -445,7 +445,7 @@ class PolychromaticTrayApplet():
 
                 # Option is a clickable one-way action with no feedback
                 elif isinstance(type, Backend.ButtonOption):
-                    indicator.create_menu_item(submenu, option.button_label, True, cb.apply_option, [option, None, 0], option.icon)
+                    indicator.create_menu_item(submenu, option.button_label, True, cb.apply_option, [option, None, 0, device], option.icon)
 
             # Seperator multiple zones if applicable
             if multiple_zones:
@@ -510,7 +510,7 @@ class PolychromaticTrayApplet():
 
         return submenu_item
 
-    def create_parameters_menu(self, option):
+    def create_parameters_menu(self, option, device):
         """
         Creates the submenu for an option containing parameters from a multiple
         choice or effect list.
@@ -518,7 +518,7 @@ class PolychromaticTrayApplet():
         submenu, submenu_item = indicator.create_submenu(option.label, True, option.icon)
 
         for param in option.parameters:
-            indicator.create_menu_item(submenu, param.label, True, cb.apply_option, [option, param.data, param.colours_required], param.icon)
+            indicator.create_menu_item(submenu, param.label, True, cb.apply_option, [option, param.data, param.colours_required, device], param.icon)
 
         return submenu_item
 
@@ -545,7 +545,7 @@ class PolychromaticTrayApplet():
                 icon = self._get_icon("params", str(no))
 
             suffix = option.suffix if no == 1 else option.suffix_plural
-            indicator.create_menu_item(submenu, str(no) + suffix, True, cb.apply_option, [option, int(no), 0], icon)
+            indicator.create_menu_item(submenu, str(no) + suffix, True, cb.apply_option, [option, int(no), 0, None], icon)
 
         return submenu_item
 
@@ -558,8 +558,8 @@ class PolychromaticTrayApplet():
         # Some IDs have submenu icons
         label_enable = option.label_enable if option.label_enable else _("On")
         label_disable = option.label_disable if option.label_disable else _("Off")
-        indicator.create_menu_item(submenu, label_enable, True, cb.apply_option, [option, True, 0], option.icon_enable)
-        indicator.create_menu_item(submenu, label_disable, True, cb.apply_option, [option, False, 0], option.icon_disable)
+        indicator.create_menu_item(submenu, label_enable, True, cb.apply_option, [option, True, 0, None], option.icon_enable)
+        indicator.create_menu_item(submenu, label_disable, True, cb.apply_option, [option, False, 0, None], option.icon_disable)
 
         return submenu_item
 
@@ -626,7 +626,11 @@ class Callback():
         Params:
             attr        [<Backend.Option object>, <Backend.Option.Parameter or None>]
         """
-        option, param_data, param_colours = attr
+        option, param_data, param_colours, device = attr
+
+        # If this is an effect, stop any software effects currently running.
+        if isinstance(option, Backend.EffectOption):
+            middleman.stop_software_effect(device.serial)
 
         # If the user set a primary colour in this session, use that.
         global primary_colour

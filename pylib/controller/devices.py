@@ -444,6 +444,7 @@ class DevicesTab(shared.TabData):
         def _clicked_effect_button(button):
             option = button.option
             param = self.middleman.get_default_parameter(option)
+            self.middleman.stop_software_effect(self.current_device.serial)
 
             # TODO: Error checking with _event_check_response
             if param:
@@ -933,7 +934,6 @@ class DevicesTab(shared.TabData):
                         item.setIcon(1, QIcon(common.get_icon("general", "success")))
                     else:
                         item.setText(1, _("No"))
-                        item.setIcon(1, QIcon(common.get_icon("general", "negative")))
                 if disabled:
                     item.setDisabled(True)
                 if icon:
@@ -965,7 +965,8 @@ class DevicesTab(shared.TabData):
 
             # Software Effects
             cfx = mkitem(_("Custom Effects"))
-            cfx.addChild(mkitem(_("Supported"), True if device.matrix else False))
+            fx_supported = True if device.matrix else False
+            cfx.addChild(mkitem(_("Supported"), fx_supported, disabled=not fx_supported))
             if device.matrix:
                 btn_test_matrix.setDisabled(False)
                 dimensions = common.get_plural(device.matrix.rows, _("1 row"), _("2 rows").replace("2", str(device.matrix.rows)))

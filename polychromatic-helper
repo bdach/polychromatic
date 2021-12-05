@@ -20,13 +20,14 @@
 A multipurpose "helper" process that runs in the background to control separate
 operations of Polychromatic, such as:
 
-- Playback of custom effects on specific hardware.
+- Handle the playback of custom "software" effects.
+- Autostart the tray applet and resume previous software settings.
 - Monitor and process automatic rules (triggers).
-- Autostart the tray applet and resume previous settings.
 
 The helper intends to be as lightweight and minimal as possible as there could
 be multple helper processes running simultaneously. It also is designed to be
-'terminated' without fuss as Polychromatic will record PIDs for the processes.
+'terminated' without fuss as Polychromatic will record and validate PIDs to
+track alive or dead processes.
 """
 import argparse
 import glob
@@ -158,7 +159,7 @@ class Bootstrapper(object):
             self.middleman.init()
 
         if len(self.middleman.backends) == 0:
-            dbg.stdout("Timed out waiting for backends to load, or they are non-functional.", dbg.error)
+            dbg.stdout("Timed out waiting for backends to load, or they are unavailable.", dbg.error)
 
         # Determine what to do for devices upon login.
         # TODO: Refactor into functions
@@ -222,16 +223,15 @@ class Bootstrapper(object):
         # Load device
         if serial:
             device = self.middleman.get_device_by_serial(serial)
-
             if not device:
                 dbg.stdout(f"{serial}: Device not found. Cannot play effect!", dbg.error)
                 exit(1)
         else:
             device = self.middleman.get_device_by_name(name)
-
             if not device:
                 dbg.stdout(f"{name}: Device not found. Cannot play effect!", dbg.error)
                 exit(1)
+            serial = device.serial
 
         if not device.matrix:
             dbg.stdout(f"{device.name}: Custom effects unsupported!", dbg.error)
@@ -300,8 +300,7 @@ class EffectPlayback(object):
             for x in frame.keys():
                 for y in frame[x].keys():
                     try:
-                        hex_value = frame[str(x)][str(y)]
-                        rgb = self.matrix.hex_to_rgb(hex_value)
+                        rgb = common.hex_to_rgb(frame[str(x)][str(y)])
                         self.matrix.set(int(x), int(y), rgb[0], rgb[1], rgb[2])
                     except KeyError:
                         # Expected, no data stored for this position

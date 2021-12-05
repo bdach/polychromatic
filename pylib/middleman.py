@@ -293,6 +293,9 @@ class Middleman(object):
         For example, this may be used to restore previously played effect prior to
         opening the effect editor which was physically previewing on the hardware.
         """
+        # TODO: Catch error?
+        device.refresh_state()
+
         # Was the device playing a software effect?
         state = procpid.DeviceSoftwareState(device.serial)
         effect = state.get_effect()
@@ -346,4 +349,19 @@ class Middleman(object):
             option = self.get_active_effect(zone)
             if option:
                 self.set_colour_for_option(option, hex_value, colour_pos)
+
+    def stop_software_effect(self, serial):
+        """
+        Prior to applying a hardware effect, make sure any software effects
+        have stopped.
+        """
+        process = procpid.ProcessManager(serial)
+        state = procpid.DeviceSoftwareState(serial)
+
+        if state.get_effect() or process.is_another_instance_is_running():
+            process.stop()
+            state.clear_effect()
+
+        if state.get_preset():
+            state.clear_preset()
 
