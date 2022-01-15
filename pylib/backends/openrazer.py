@@ -185,6 +185,9 @@ class Backend(_backend.Backend):
         dpi_max = None
         dpi_stages = []
         poll_rate = None
+        scroll_mode = None
+        scroll_acceleration = None
+        scroll_smart_reel = None
 
         # Retrieve device variables
         if rdevice.has("name"):
@@ -242,6 +245,15 @@ class Backend(_backend.Backend):
 
         if rdevice.has("poll_rate"):
             poll_rate = rdevice.poll_rate
+
+        if rdevice.has("scroll_mode"):
+            scroll_mode = rdevice.scroll_mode
+
+        if rdevice.has("scroll_acceleration"):
+            scroll_acceleration = rdevice.scroll_acceleration
+
+        if (rdevice.has("scroll_smart_reel")):
+            scroll_smart_reel = rdevice.scroll_smart_reel
 
         if rdevice.has("battery"):
             battery_level = rdevice.battery_level
@@ -620,6 +632,61 @@ class Backend(_backend.Backend):
                 "colours": [] # n/a
             })
 
+        # -- Scroll Wheel
+        if rdevice.has("scroll_mode"):
+            _init_main_if_empty()
+            params = []
+            ids = {
+                0: "tactile",
+                1: "free_spin"
+            }
+            labels = {
+                0: "Tactile",
+                1: "Free Spin"
+            }
+
+            supported_modes = [0, 1]
+
+            for mode in supported_modes:
+                params.append({
+                    "id": ids[mode],
+                    "label": labels[mode],
+                    "data": mode,
+                    "active": scroll_mode == mode,
+                    "colours": [] # n/a
+                })
+
+            zone_options["main"].append({
+                "id": "scroll_mode",
+                "label": self._("Scroll Mode"),
+                "type": "multichoice",
+                "parameters": params,
+                "active": True,
+                "colours": [] # n/a
+            })
+
+        # -- Scroll Acceleration
+        if rdevice.has("scroll_acceleration"):
+            _init_main_if_empty()
+            zone_options["main"].append({
+                "id": "scroll_acceleration",
+                "label": self._("Scroll Acceleration"),
+                "type": "toggle",
+                "active": True if rdevice.scroll_acceleration else False,
+                "colours": [] # n/a
+            })
+
+        # -- Smart Reel
+        if rdevice.has("scroll_smart_reel"):
+            _init_main_if_empty()
+            zone_options["main"].append({
+                "id": "scroll_smart_reel",
+                "label": self._("Smart Reel"),
+                "type": "toggle",
+                "active": True if rdevice.scroll_smart_reel else False,
+                "colours": [] # n/a
+            })
+
         # Low power and sleep mode are not exposed individually, but should do when battery is present
         if rdevice.has("battery"):
             _init_main_if_empty()
@@ -825,6 +892,9 @@ class Backend(_backend.Backend):
             "dpi_stages": dpi_stages,
             "dpi_min": dpi_min,
             "dpi_max": dpi_max,
+            "scroll_mode": scroll_mode,
+            "scroll_acceleration": scroll_acceleration,
+            "scroll_smart_reel": scroll_smart_reel,
             "matrix": matrix,
             "matrix_rows": matrix_rows,
             "matrix_cols": matrix_cols,
@@ -1051,6 +1121,18 @@ class Backend(_backend.Backend):
             elif option_id == "poll_rate":
                 # Params: (int)
                 rdevice.poll_rate = int(option_data)
+
+            elif option_id == "scroll_mode":
+                # Params: (int)
+                rdevice.scroll_mode = int(option_data)
+
+            elif option_id == "scroll_acceleration":
+                # Params: (bool)
+                rdevice.scroll_acceleration = bool(option_data)
+
+            elif option_id == "scroll_smart_reel":
+                # Params: (bool)
+                rdevice.scroll_smart_reel = bool(option_data)
 
             elif option_id == "idle_time":
                 # Params: (int) [in minutes]

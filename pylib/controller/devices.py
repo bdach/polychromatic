@@ -1071,6 +1071,23 @@ class DevicesTab(shared.TabData):
                 dpi.addChild(mkitem(_("Maximum"), device["dpi_max"]))
                 tree.addTopLevelItem(dpi)
 
+            # Scroll wheel
+            if device["scroll_mode"] is not None:
+                scroll = mkitem(_("Scroll Wheel"))
+                scroll_mode = device["scroll_mode"]
+                scroll_mode_label = None
+                if scroll_mode == 0:
+                    scroll_mode_label = _("Tactile")
+                elif scroll_mode == 1:
+                    scroll_mode_label = _("Free Spin")
+
+                scroll.addChild(mkitem(_("Scroll Mode"), scroll_mode_label))
+                if device["scroll_acceleration"] is not None:
+                    scroll.addChild(mkitem(_("Scroll Acceleration Active"), device["scroll_acceleration"]))
+                if device["scroll_smart_reel"] is not None:
+                    scroll.addChild(mkitem(_("Smart Reel Active"), device["scroll_smart_reel"]))
+                tree.addTopLevelItem(scroll);
+
             # Summary
             summary = mkitem(_("Summary"))
             for state in device["summary"]:
